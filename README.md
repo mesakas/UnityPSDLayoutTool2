@@ -53,33 +53,33 @@ This project is explicitly based on the original `UnityPSDLayoutTool` and adds c
 
 主要选项：
 
-- `Maximum Depth`
-- `Pixels to Unity Units`
-- `Inspector Language`（中文 / English）
-- `Use Unity UI`
-- `Target Canvas (Optional)`
-- `Scale To Target Canvas`
-- `Preserve Aspect Ratio (No Stretch)`
-- `Output Mode`
-- `Output Folder Name`
-- `Prefab Output`
+- `最大深度（Z）`
+- `像素到单位（PPU）`
+- `界面语言`（中文 / English）
+- `使用 Unity UI`
+- `目标 Canvas（可选）`
+- `匹配目标 Canvas 尺寸`
+- `保持宽高比（不拉伸）`
+- `资源输出位置`
+- `输出文件夹名`
+- `Prefab 输出位置`
 
 主要操作：
 
-- `Export Layers as Textures`
-- `Layout in Current Scene`
-- `Generate Prefab`
+- `导出图层为纹理`
+- `在当前场景中布局`
+- `生成预制体`
 
 #### Canvas 对齐模式（UI）
 
-- `Use Unity UI = true` 且 `Target Canvas` 已选择：生成的根节点会作为 `RectTransform` 挂到目标 Canvas 下，坐标按 PSD 像素映射，便于与现有 UI 版式对齐。
-- `Scale To Target Canvas = true`（默认）：会按目标 Canvas 尺寸进行缩放映射，解决 PSD 分辨率与 Canvas 分辨率不一致导致的错位。
+- `使用 Unity UI = true` 且 `目标 Canvas（可选）` 已选择：生成的根节点会作为 `RectTransform` 挂到目标 Canvas 下，坐标按 PSD 像素映射，便于与现有 UI 版式对齐。
+- `匹配目标 Canvas 尺寸 = true`（默认）：会按目标 Canvas 尺寸进行缩放映射，解决 PSD 分辨率与 Canvas 分辨率不一致导致的错位。
   - 若 Canvas 使用 `Canvas Scaler / Scale With Screen Size`，会优先按 `Reference Resolution` 对齐。
-- `Scale To Target Canvas = false`：保持 PSD 1:1 像素映射，适合你已经保证 PSD 与 Canvas 尺寸一致的情况。
-- `Preserve Aspect Ratio (No Stretch) = true`（默认）：等比缩放，避免 X/Y 比例不一致造成拉伸。
-- `Preserve Aspect Ratio (No Stretch) = false`：按宽高分别缩放，可能出现拉伸，但能完全铺满目标 Canvas 尺寸。
-- `Target Canvas` 留空或当前场景找不到该 Canvas：回退为旧行为，自动创建一个 World Space Canvas。
-- `Target Canvas` 是按场景层级路径保存的；如果你重命名或移动了 Canvas，请在 Inspector 里重新选择一次。
+- `匹配目标 Canvas 尺寸 = false`：保持 PSD 1:1 像素映射，适合你已经保证 PSD 与 Canvas 尺寸一致的情况。
+- `保持宽高比（不拉伸） = true`（默认）：等比缩放，避免 X/Y 比例不一致造成拉伸。
+- `保持宽高比（不拉伸） = false`：按宽高分别缩放，可能出现拉伸，但能完全铺满目标 Canvas 尺寸。
+- `目标 Canvas（可选）` 留空或当前场景找不到该 Canvas：回退为旧行为，自动创建一个 World Space Canvas。
+- `目标 Canvas（可选）` 是按场景层级路径保存的；如果你重命名或移动了 Canvas，请在 Inspector 里重新选择一次。
 
 #### 透明度说明
 
@@ -193,26 +193,26 @@ Copy the folder below into your Unity project:
 
 Main options include:
 
-- `Maximum Depth`
-- `Pixels to Unity Units`
+- `Maximum Depth (Z)`
+- `Pixels To Units (PPU)`
 - `Inspector Language` (Chinese / English)
 - `Use Unity UI`
 - `Target Canvas (Optional)`
 - `Scale To Target Canvas`
 - `Preserve Aspect Ratio (No Stretch)`
-- `Output Mode`
+- `Output Directory`
 - `Output Folder Name`
 - `Prefab Output`
 
 Actions:
 
-- `Export Layers as Textures`
-- `Layout in Current Scene`
+- `Export Layers As Textures`
+- `Layout In Current Scene`
 - `Generate Prefab`
 
 ### Canvas Alignment Mode (UI)
 
-- When `Use Unity UI = true` and `Target Canvas` is set, the generated root is created as a `RectTransform` under that canvas and positioned in PSD pixel space.
+- When `Use Unity UI = true` and `Target Canvas (Optional)` is set, the generated root is created as a `RectTransform` under that canvas and positioned in PSD pixel space.
 - `Scale To Target Canvas = true` (default) scales PSD positions and sizes to the selected canvas rect, which fixes mismatches when PSD and canvas resolutions differ.
   - If the canvas uses `Canvas Scaler / Scale With Screen Size`, mapping uses `Reference Resolution` first.
 - `Scale To Target Canvas = false` keeps a strict 1:1 PSD pixel mapping.
