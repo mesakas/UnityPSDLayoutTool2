@@ -39,6 +39,8 @@ This project is explicitly based on the original `UnityPSDLayoutTool` and adds c
 2. 在 `Project` 面板选中该 PSD 文件。
 3. 在 `Inspector` 中使用 **PSD Layout Tool 2** 的选项和按钮。
 
+![PSD Inspector](screenshots/inspector.png)
+
 主要选项：
 
 - `Maximum Depth`
@@ -53,6 +55,18 @@ This project is explicitly based on the original `UnityPSDLayoutTool` and adds c
 - `Export Layers as Textures`
 - `Layout in Current Scene`
 - `Generate Prefab`
+
+### Photoshop 兼容性（栅格化）
+
+Photoshop 的智能对象（Smart Objects）不在此插件的解析支持范围内。导入前建议先对相关图层进行栅格化。
+
+操作路径：
+
+1. 在 Photoshop 顶部菜单点击 **Layer**
+2. 点击 **Rasterize**
+3. 点击 **All Layers**（或按需栅格化目标图层）
+
+![Photoshop Rasterize](screenshots/photoshop.png)
 
 ### 特殊标签（与原版标签规则兼容）
 
@@ -134,6 +148,8 @@ Copy the folder below into your Unity project:
 2. Select the PSD file in the Project window.
 3. In Inspector, use **PSD Layout Tool 2** options and buttons.
 
+![PSD Inspector](screenshots/inspector.png)
+
 Main options include:
 
 - `Maximum Depth`
@@ -148,6 +164,18 @@ Actions:
 - `Export Layers as Textures`
 - `Layout in Current Scene`
 - `Generate Prefab`
+
+## Photoshop Compatibility (Rasterize)
+
+Photoshop Smart Objects are not fully supported by this importer pipeline. Rasterize the relevant layers before import.
+
+Steps:
+
+1. In Photoshop menu, click **Layer**
+2. Click **Rasterize**
+3. Click **All Layers** (or rasterize only target layers as needed)
+
+![Photoshop Rasterize](screenshots/photoshop.png)
 
 ## Special Tags (same as original behavior)
 
