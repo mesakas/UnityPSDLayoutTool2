@@ -6,7 +6,7 @@
 
 本项目明确基于原版 `UnityPSDLayoutTool`，并在其基础上增加了新版本 Unity 兼容修复与工作流改进。
 
-## English
+
 
 `UnityPSDLayoutTool2` is a maintained fork of **UnityPSDLayoutTool**.
 
