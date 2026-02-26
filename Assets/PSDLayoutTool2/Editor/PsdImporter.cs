@@ -235,8 +235,7 @@
             if (CreatePrefab)
             {
                 string prefabPath = GetPrefabRelativePath(outputRelativePath);
-                UnityEngine.Object prefab = PrefabUtility.CreateEmptyPrefab(prefabPath);
-                PrefabUtility.ReplacePrefab(rootPsdGameObject, prefab);
+                PrefabUtility.SaveAsPrefabAsset(rootPsdGameObject, prefabPath);
 
                 if (!LayoutInScene)
                 {
@@ -684,6 +683,7 @@
         /// <returns>The imported image as a <see cref="Sprite"/> object.</returns>
         private static Sprite ImportSprite(string relativePathToSprite, string packingTag)
         {
+            _ = packingTag;
             relativePathToSprite = relativePathToSprite.Replace('\\', '/');
             AssetDatabase.ImportAsset(relativePathToSprite, ImportAssetOptions.ForceUpdate);
 
@@ -697,7 +697,6 @@
                 textureImporter.spritePivot = new Vector2(0.5f, 0.5f);
                 textureImporter.maxTextureSize = 2048;
                 textureImporter.spritePixelsPerUnit = PixelsToUnits;
-                textureImporter.spritePackingTag = packingTag;
             }
 
             AssetDatabase.ImportAsset(relativePathToSprite, ImportAssetOptions.ForceUpdate);
@@ -953,7 +952,6 @@
                 GameObject gameObject = new GameObject("EventSystem");
                 gameObject.AddComponent<EventSystem>();
                 gameObject.AddComponent<StandaloneInputModule>();
-                gameObject.AddComponent<TouchInputModule>();
             }
         }
 
