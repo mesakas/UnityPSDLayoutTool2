@@ -2,9 +2,7 @@
 
 # UnityPSDLayoutTool2
 
-`UnityPSDLayoutTool2` 是基于原始 **UnityPSDLayoutTool** 的维护增强版，重点补充了新版 Unity 兼容和中文工作流支持。
-
-本项目明确基于原版 `UnityPSDLayoutTool`，并在其基础上增加了新版本 Unity 兼容修复与工作流改进。
+本项目基于 `UnityPSDLayoutTool`，并在其基础上增加了新版本 Unity 兼容修复与工作流改进。
 
 
 
