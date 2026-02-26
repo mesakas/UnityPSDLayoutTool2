@@ -4,10 +4,6 @@
 
 本项目基于 `UnityPSDLayoutTool`，并在其基础上增加了新版本 Unity 兼容修复与工作流改进。
 
-
-
-`UnityPSDLayoutTool2` is a maintained fork of **UnityPSDLayoutTool**.
-
 This project is explicitly based on the original `UnityPSDLayoutTool` and adds compatibility fixes and workflow improvements for newer Unity versions.
 
 ## 中文说明
