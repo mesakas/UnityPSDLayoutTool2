@@ -217,6 +217,10 @@
                     CreateUICanvas();
                     rootPsdGameObject = Canvas;
                 }
+                else if (CreatePrefab)
+                {
+                    rootPsdGameObject = CreateRectRoot();
+                }
                 else
                 {
                     rootPsdGameObject = new GameObject(PsdName);
@@ -242,6 +246,20 @@
             }
 
             AssetDatabase.Refresh();
+        }
+
+        /// <summary>
+        /// Creates a RectTransform root for prefab generation when Unity UI mode is not enabled.
+        /// </summary>
+        /// <returns>The created root game object.</returns>
+        private static GameObject CreateRectRoot()
+        {
+            GameObject root = new GameObject(PsdName, typeof(RectTransform));
+            RectTransform rectTransform = root.GetComponent<RectTransform>();
+            rectTransform.sizeDelta = new Vector2(CanvasSize.x / PixelsToUnits, CanvasSize.y / PixelsToUnits);
+            rectTransform.anchoredPosition3D = Vector3.zero;
+            rectTransform.localScale = Vector3.one;
+            return root;
         }
 
         /// <summary>
