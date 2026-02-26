@@ -1,4 +1,6 @@
-﻿# UnityPSDLayoutTool2
+﻿![UnityPSDLayoutTool2 Icon](screenshots/Icon.png)
+
+# UnityPSDLayoutTool2
 
 `UnityPSDLayoutTool2` is a maintained fork of **UnityPSDLayoutTool**.
 
@@ -289,3 +291,5 @@ MIT License. See [LICENSE.md](LICENSE.md).
 ## Credit
 
 This project is based on the original **UnityPSDLayoutTool** and keeps the same MIT license model.
+
+
