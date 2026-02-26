@@ -112,15 +112,13 @@ Photoshop 的智能对象（Smart Objects）不在此插件的解析支持范围
 - 标签匹配不区分大小写（例如 `|button` 与 `|Button` 等效）。
 - 可以在同一层名里组合多个标签（例如 `Run|Animation|FPS=12`）。
 - 识别到的标签会从生成对象的名称中移除。
-- 只有特定模式下标签才会生效（见下表“生效条件”）。
+- 只有特定模式下标签才会生效（见下方“生效条件”说明）。
 
 #### 组图层标签（Folder / Group Layer）
 
-| 标签 | 作用 | 生效条件 | 备注 |
-| --- | --- | --- | --- |
-| `|Animation` | 把该组的子图层作为帧，生成 Sprite 动画 | `Use Unity UI = false` | 会生成 `.anim` 和 `.controller`，并自动挂到对象上 |
-| `|FPS=数字` | 指定 `|Animation` 的帧率 | 与 `|Animation` 同时使用 | 示例：`|FPS=12`、`|FPS=24` |
-| `|Button` | 把该组作为一个按钮容器并读取子图层状态 | `Use Unity UI = true` | 非 UI 模式下不会创建按钮 |
+- `|Animation`：作用：把该组的子图层作为帧，生成 Sprite 动画；生效条件：`Use Unity UI = false`；备注：会生成 `.anim` 和 `.controller`，并自动挂到对象上。
+- `|FPS=数字`：作用：指定 `|Animation` 的帧率；生效条件：与 `|Animation` 同时使用；备注：示例：`|FPS=12`、`|FPS=24`。
+- `|Button`：作用：把该组作为一个按钮容器并读取子图层状态；生效条件：`Use Unity UI = true`；备注：非 UI 模式下不会创建按钮。
 
 动画命名示例：
 
@@ -134,13 +132,11 @@ Photoshop 的智能对象（Smart Objects）不在此插件的解析支持范围
 
 #### 普通图层标签（Art Layer）
 
-| 标签 | 作用 | 适用场景 |
-| --- | --- | --- |
-| `|Default` / `|Enabled` / `|Normal` / `|Up` | 作为按钮默认状态（同义标签） | `|Button` 组内 |
-| `|Pressed` | 作为按钮按下状态 | `|Button` 组内 |
-| `|Highlighted` | 作为按钮高亮状态 | `|Button` 组内 |
-| `|Disabled` | 作为按钮禁用状态 | `|Button` 组内 |
-| `|Text` | 将“非文本图层”作为按钮文字图像子节点 | `|Button` 组内，且该层不是文本层 |
+- `|Default` / `|Enabled` / `|Normal` / `|Up`：作用：作为按钮默认状态（同义标签）；适用场景：`|Button` 组内。
+- `|Pressed`：作用：作为按钮按下状态；适用场景：`|Button` 组内。
+- `|Highlighted`：作用：作为按钮高亮状态；适用场景：`|Button` 组内。
+- `|Disabled`：作用：作为按钮禁用状态；适用场景：`|Button` 组内。
+- `|Text`：作用：将“非文本图层”作为按钮文字图像子节点；适用场景：`|Button` 组内，且该层不是文本层。
 
 当前实现限制：
 
@@ -252,15 +248,13 @@ Tag parsing rules:
 - Tag matching is case-insensitive (for example, `|button` equals `|Button`).
 - Multiple tags can be combined in one layer name (for example, `Run|Animation|FPS=12`).
 - Recognized tags are removed from generated object names.
-- Tags are mode-dependent and only work under specific conditions.
+- Tags are mode-dependent and only work under specific conditions (see details below).
 
 ### Group Layer Tags
 
-| Tag | Behavior | Effective when | Notes |
-| --- | --- | --- | --- |
-| `|Animation` | Creates a sprite animation from child layers | `Use Unity UI = false` | Generates `.anim` + `.controller` and assigns animator |
-| `|FPS=number` | Sets FPS for `|Animation` | Used with `|Animation` | Example: `|FPS=12`, `|FPS=24` |
-| `|Button` | Builds a UI button from child state layers | `Use Unity UI = true` | No non-UI button implementation currently |
+- `|Animation`: Behavior: creates a sprite animation from child layers; effective when: `Use Unity UI = false`; notes: generates `.anim` + `.controller` and assigns animator.
+- `|FPS=number`: Behavior: sets FPS for `|Animation`; effective when: used with `|Animation`; notes: example `|FPS=12`, `|FPS=24`.
+- `|Button`: Behavior: builds a UI button from child state layers; effective when: `Use Unity UI = true`; notes: no non-UI button implementation currently.
 
 Animation naming example:
 
@@ -274,13 +268,11 @@ Button naming example:
 
 ### Art Layer Tags
 
-| Tag | Behavior | Typical usage |
-| --- | --- | --- |
-| `|Default` / `|Enabled` / `|Normal` / `|Up` | Normal button state (synonyms) | Inside a `|Button` group |
-| `|Pressed` | Pressed button state | Inside a `|Button` group |
-| `|Highlighted` | Highlighted button state | Inside a `|Button` group |
-| `|Disabled` | Disabled button state | Inside a `|Button` group |
-| `|Text` | Treats a non-text art layer as button text image child | Inside a `|Button` group |
+- `|Default` / `|Enabled` / `|Normal` / `|Up`: behavior: normal button state (synonyms); typical usage: inside a `|Button` group.
+- `|Pressed`: behavior: pressed button state; typical usage: inside a `|Button` group.
+- `|Highlighted`: behavior: highlighted button state; typical usage: inside a `|Button` group.
+- `|Disabled`: behavior: disabled button state; typical usage: inside a `|Button` group.
+- `|Text`: behavior: treats a non-text art layer as button text image child; typical usage: inside a `|Button` group.
 
 Current limitations:
 
@@ -295,5 +287,4 @@ MIT License. See [LICENSE.md](LICENSE.md).
 ## Credit
 
 This project is based on the original **UnityPSDLayoutTool** and keeps the same MIT license model.
-
 
