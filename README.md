@@ -56,22 +56,46 @@ This project is explicitly based on the original `UnityPSDLayoutTool` and adds c
 
 ### 特殊标签（与原版标签规则兼容）
 
-#### 组图层标签
+标签解析规则：
 
-- `|Animation`：将子图层作为动画帧生成精灵动画
-- `|FPS=##`：设置动画帧率（默认 30）
-- `|Button`：将子图层按状态生成按钮
+- 标签匹配不区分大小写（例如 `|button` 与 `|Button` 等效）。
+- 可以在同一层名里组合多个标签（例如 `Run|Animation|FPS=12`）。
+- 识别到的标签会从生成对象的名称中移除。
+- 只有特定模式下标签才会生效（见下表“生效条件”）。
 
-#### 普通图层标签
+#### 组图层标签（Folder / Group Layer）
 
-- `|Disabled`
-- `|Highlighted`
-- `|Pressed`
-- `|Default`
-- `|Enabled`
-- `|Normal`
-- `|Up`
-- `|Text`
+| 标签 | 作用 | 生效条件 | 备注 |
+| --- | --- | --- | --- |
+| `|Animation` | 把该组的子图层作为帧，生成 Sprite 动画 | `Use Unity UI = false` | 会生成 `.anim` 和 `.controller`，并自动挂到对象上 |
+| `|FPS=数字` | 指定 `|Animation` 的帧率 | 与 `|Animation` 同时使用 | 示例：`|FPS=12`、`|FPS=24` |
+| `|Button` | 把该组作为一个按钮容器并读取子图层状态 | `Use Unity UI = true` | 非 UI 模式下不会创建按钮 |
+
+动画命名示例：
+
+- 组名：`HeroRun|Animation|FPS=12`
+- 子图层：`run_01`, `run_02`, `run_03`...
+
+按钮命名示例：
+
+- 组名：`PlayButton|Button`
+- 子图层：`Play_Up|Normal`, `Play_Down|Pressed`, `Play_Hover|Highlighted`, `Play_Disabled|Disabled`
+
+#### 普通图层标签（Art Layer）
+
+| 标签 | 作用 | 适用场景 |
+| --- | --- | --- |
+| `|Default` / `|Enabled` / `|Normal` / `|Up` | 作为按钮默认状态（同义标签） | `|Button` 组内 |
+| `|Pressed` | 作为按钮按下状态 | `|Button` 组内 |
+| `|Highlighted` | 作为按钮高亮状态 | `|Button` 组内 |
+| `|Disabled` | 作为按钮禁用状态 | `|Button` 组内 |
+| `|Text` | 将“非文本图层”作为按钮文字图像子节点 | `|Button` 组内，且该层不是文本层 |
+
+当前实现限制：
+
+- `|Animation` 在 `Use Unity UI = true` 时暂未实现 UI 动画生成。
+- `|Button` 在 `Use Unity UI = false` 时暂未实现非 UI 按钮生成。
+- `|Button` 组中的“文本图层（Text Layer）”子节点尚未自动生成为按钮子文本对象。
 
 ### 许可证
 
@@ -127,22 +151,46 @@ Actions:
 
 ## Special Tags (same as original behavior)
 
+Tag parsing rules:
+
+- Tag matching is case-insensitive (for example, `|button` equals `|Button`).
+- Multiple tags can be combined in one layer name (for example, `Run|Animation|FPS=12`).
+- Recognized tags are removed from generated object names.
+- Tags are mode-dependent and only work under specific conditions.
+
 ### Group Layer Tags
 
-- `|Animation` : create sprite animation from child layers
-- `|FPS=##` : set animation FPS (default 30)
-- `|Button` : create button from tagged child layers
+| Tag | Behavior | Effective when | Notes |
+| --- | --- | --- | --- |
+| `|Animation` | Creates a sprite animation from child layers | `Use Unity UI = false` | Generates `.anim` + `.controller` and assigns animator |
+| `|FPS=number` | Sets FPS for `|Animation` | Used with `|Animation` | Example: `|FPS=12`, `|FPS=24` |
+| `|Button` | Builds a UI button from child state layers | `Use Unity UI = true` | No non-UI button implementation currently |
+
+Animation naming example:
+
+- Group: `HeroRun|Animation|FPS=12`
+- Children: `run_01`, `run_02`, `run_03`...
+
+Button naming example:
+
+- Group: `PlayButton|Button`
+- Children: `Play_Up|Normal`, `Play_Down|Pressed`, `Play_Hover|Highlighted`, `Play_Disabled|Disabled`
 
 ### Art Layer Tags
 
-- `|Disabled`
-- `|Highlighted`
-- `|Pressed`
-- `|Default`
-- `|Enabled`
-- `|Normal`
-- `|Up`
-- `|Text`
+| Tag | Behavior | Typical usage |
+| --- | --- | --- |
+| `|Default` / `|Enabled` / `|Normal` / `|Up` | Normal button state (synonyms) | Inside a `|Button` group |
+| `|Pressed` | Pressed button state | Inside a `|Button` group |
+| `|Highlighted` | Highlighted button state | Inside a `|Button` group |
+| `|Disabled` | Disabled button state | Inside a `|Button` group |
+| `|Text` | Treats a non-text art layer as button text image child | Inside a `|Button` group |
+
+Current limitations:
+
+- `|Animation` is not implemented for UI mode (`Use Unity UI = true`).
+- `|Button` is not implemented for non-UI mode (`Use Unity UI = false`).
+- Text-layer children inside `|Button` are currently not auto-generated as child text objects.
 
 ## License
 
