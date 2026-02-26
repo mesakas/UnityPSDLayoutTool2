@@ -91,6 +91,8 @@
             OutputMode = OutputDirectoryMode.PsdDirectory;
             OutputFolderName = string.Empty;
             PrefabMode = PrefabOutputMode.SiblingToOutputFolder;
+            ScaleToTargetCanvas = true;
+            PreserveAspectWhenScalingToCanvas = true;
         }
 
         /// <summary>
@@ -107,6 +109,22 @@
         /// Gets or sets a value indicating whether to use the Unity 4.6+ UI system or not.
         /// </summary>
         public static bool UseUnityUI { get; set; }
+
+        /// <summary>
+        /// Gets or sets the hierarchy path of the target canvas to align generated UI under.
+        /// Empty means creating a dedicated world-space canvas as before.
+        /// </summary>
+        public static string TargetCanvasPath { get; set; }
+
+        /// <summary>
+        /// Gets or sets a value indicating whether the generated UI should be scaled to the selected target canvas size.
+        /// </summary>
+        public static bool ScaleToTargetCanvas { get; set; }
+
+        /// <summary>
+        /// Gets or sets a value indicating whether scaling to target canvas should preserve PSD aspect ratio.
+        /// </summary>
+        public static bool PreserveAspectWhenScalingToCanvas { get; set; }
 
         /// <summary>
         /// Gets or sets the generated files output mode.
@@ -147,6 +165,16 @@
         /// Gets or sets the Unity 4.6+ UI canvas.
         /// </summary>
         private static GameObject Canvas { get; set; }
+
+        /// <summary>
+        /// Gets or sets a value indicating whether UI elements should use anchored-position placement for target canvas alignment.
+        /// </summary>
+        private static bool UseTargetCanvasCoordinates { get; set; }
+
+        /// <summary>
+        /// Gets or sets the reference canvas size used for target-canvas coordinate mapping.
+        /// </summary>
+        private static Vector2 TargetCanvasSize { get; set; }
 
         /// <summary>
         /// Gets or sets the current <see cref="PsdFile"/> that is being imported.
@@ -194,11 +222,13 @@
         {
             currentDepth = MaximumDepth;
             currentSortingOrder = 0;
+            UseTargetCanvasCoordinates = false;
             string normalizedAssetPath = asset.Replace('\\', '/');
             string fullPath = Path.Combine(GetFullProjectPath(), normalizedAssetPath);
 
             PsdFile psd = new PsdFile(fullPath);
             CanvasSize = new Vector2(psd.Width, psd.Height);
+            TargetCanvasSize = CanvasSize;
 
             // Set the depth step based on the layer count.  If there are no layers, default to 0.1f.
             depthStep = psd.Layers.Count != 0 ? MaximumDepth / psd.Layers.Count : 0.1f;
@@ -214,8 +244,25 @@
                 if (UseUnityUI)
                 {
                     CreateUIEventSystem();
-                    CreateUICanvas();
-                    rootPsdGameObject = Canvas;
+                    Canvas targetCanvas = ResolveTargetCanvas();
+                    if (targetCanvas != null)
+                    {
+                        UseTargetCanvasCoordinates = true;
+                        TargetCanvasSize = GetTargetCanvasRectSize(targetCanvas);
+                        rootPsdGameObject = new GameObject(PsdName, typeof(RectTransform));
+                        RectTransform rootRect = rootPsdGameObject.GetComponent<RectTransform>();
+                        rootRect.SetParent(targetCanvas.transform, false);
+                        rootRect.anchorMin = new Vector2(0.5f, 0.5f);
+                        rootRect.anchorMax = new Vector2(0.5f, 0.5f);
+                        rootRect.pivot = new Vector2(0.5f, 0.5f);
+                        rootRect.anchoredPosition = Vector2.zero;
+                        rootRect.sizeDelta = GetScaledRootSize();
+                    }
+                    else
+                    {
+                        CreateUICanvas();
+                        rootPsdGameObject = Canvas;
+                    }
                 }
                 else
                 {
@@ -241,6 +288,126 @@
             }
 
             AssetDatabase.Refresh();
+        }
+
+        /// <summary>
+        /// Resolves the configured target canvas in the current scene.
+        /// </summary>
+        /// <returns>The matching canvas if found; otherwise null.</returns>
+        private static Canvas ResolveTargetCanvas()
+        {
+            if (string.IsNullOrEmpty(TargetCanvasPath))
+            {
+                return null;
+            }
+
+            Canvas[] canvases = FindAllCanvases();
+            foreach (Canvas canvas in canvases)
+            {
+                if (GetHierarchyPath(canvas.transform) == TargetCanvasPath)
+                {
+                    return canvas;
+                }
+            }
+
+            return null;
+        }
+
+        /// <summary>
+        /// Finds all canvases in the loaded scene(s), using the newest available Unity API.
+        /// </summary>
+        /// <returns>Array of canvases.</returns>
+        private static Canvas[] FindAllCanvases()
+        {
+#if UNITY_2023_1_OR_NEWER
+            return UnityEngine.Object.FindObjectsByType<Canvas>(FindObjectsSortMode.None);
+#else
+            return UnityEngine.Object.FindObjectsOfType<Canvas>();
+#endif
+        }
+
+        /// <summary>
+        /// Gets the rect size of the target canvas if possible; otherwise falls back to PSD canvas size.
+        /// </summary>
+        /// <param name="targetCanvas">The target canvas.</param>
+        /// <returns>Canvas rect size for mapping.</returns>
+        private static Vector2 GetTargetCanvasRectSize(Canvas targetCanvas)
+        {
+            if (targetCanvas == null)
+            {
+                return CanvasSize;
+            }
+
+            CanvasScaler scaler = GetCanvasScaler(targetCanvas);
+            if (scaler != null && scaler.uiScaleMode == CanvasScaler.ScaleMode.ScaleWithScreenSize)
+            {
+                Vector2 referenceResolution = scaler.referenceResolution;
+                if (referenceResolution.x > 0 && referenceResolution.y > 0)
+                {
+                    // For Scale With Screen Size, layout authoring coordinates are based on reference resolution.
+                    return referenceResolution;
+                }
+            }
+
+            RectTransform canvasRectTransform = targetCanvas.transform as RectTransform;
+            if (canvasRectTransform == null)
+            {
+                return CanvasSize;
+            }
+
+            Rect rect = canvasRectTransform.rect;
+            if (rect.width <= 0 || rect.height <= 0)
+            {
+                return CanvasSize;
+            }
+
+            return rect.size;
+        }
+
+        /// <summary>
+        /// Gets the most relevant <see cref="CanvasScaler"/> for a target canvas.
+        /// </summary>
+        /// <param name="targetCanvas">The target canvas.</param>
+        /// <returns>The canvas scaler if found; otherwise null.</returns>
+        private static CanvasScaler GetCanvasScaler(Canvas targetCanvas)
+        {
+            if (targetCanvas == null)
+            {
+                return null;
+            }
+
+            CanvasScaler scaler = targetCanvas.GetComponent<CanvasScaler>();
+            if (scaler != null)
+            {
+                return scaler;
+            }
+
+            Canvas rootCanvas = targetCanvas.rootCanvas;
+            return rootCanvas != null ? rootCanvas.GetComponent<CanvasScaler>() : null;
+        }
+
+        /// <summary>
+        /// Gets a hierarchy path for the given transform in the form "Root/Child/SubChild".
+        /// </summary>
+        /// <param name="transform">The transform to build a path for.</param>
+        /// <returns>The hierarchy path string.</returns>
+        private static string GetHierarchyPath(Transform transform)
+        {
+            if (transform == null)
+            {
+                return string.Empty;
+            }
+
+            List<string> pathParts = new List<string>();
+            Transform current = transform;
+            while (current != null)
+            {
+                pathParts.Add(current.name);
+                current = current.parent;
+            }
+
+            pathParts.Reverse();
+            return string.Join("/", pathParts.ToArray());
         }
 
         /// <summary>
@@ -512,8 +679,21 @@
 
                 if (LayoutInScene || CreatePrefab)
                 {
-                    currentGroupGameObject = new GameObject(layer.Name);
-                    currentGroupGameObject.transform.parent = oldGroupObject.transform;
+                    if (UseUnityUI && UseTargetCanvasCoordinates)
+                    {
+                        currentGroupGameObject = new GameObject(layer.Name, typeof(RectTransform));
+                        RectTransform groupTransform = currentGroupGameObject.GetComponent<RectTransform>();
+                        groupTransform.SetParent(oldGroupObject.transform, false);
+                        groupTransform.anchorMin = new Vector2(0.5f, 0.5f);
+                        groupTransform.anchorMax = new Vector2(0.5f, 0.5f);
+                        groupTransform.pivot = new Vector2(0.5f, 0.5f);
+                        groupTransform.anchoredPosition = Vector2.zero;
+                    }
+                    else
+                    {
+                        currentGroupGameObject = new GameObject(layer.Name);
+                        currentGroupGameObject.transform.parent = oldGroupObject.transform;
+                    }
                 }
 
                 ExportTree(layer.Children);
@@ -739,7 +919,7 @@
         /// <param name="layer">The <see cref="Layer"/> to create a <see cref="TextMesh"/> from.</param>
         private static void CreateTextGameObject(Layer layer)
         {
-            Color color = layer.FillColor;
+            Color color = ApplyLayerOpacity(layer.FillColor, layer);
 
             float x = layer.Rect.x / PixelsToUnits;
             float y = layer.Rect.y / PixelsToUnits;
@@ -965,6 +1145,27 @@
         /// <returns>The newly constructed Image object.</returns>
         private static Image CreateUIImage(Layer layer)
         {
+            if (UseTargetCanvasCoordinates)
+            {
+                Vector2 scaledSize = GetScaledLayerSize(layer.Rect);
+                float uiWidthPixels = scaledSize.x;
+                float uiHeightPixels = scaledSize.y;
+
+                GameObject uiObject = new GameObject(layer.Name, typeof(RectTransform));
+                uiObject.transform.SetParent(currentGroupGameObject.transform, false);
+
+                RectTransform uiTransform = uiObject.GetComponent<RectTransform>();
+                uiTransform.anchorMin = new Vector2(0.5f, 0.5f);
+                uiTransform.anchorMax = new Vector2(0.5f, 0.5f);
+                uiTransform.pivot = new Vector2(0.5f, 0.5f);
+                uiTransform.anchoredPosition = GetLocalAnchoredPosition(layer.Rect, currentGroupGameObject);
+                uiTransform.sizeDelta = new Vector2(uiWidthPixels, uiHeightPixels);
+
+                Image uiImage = uiObject.AddComponent<Image>();
+                uiImage.sprite = CreateSprite(layer);
+                return uiImage;
+            }
+
             float x = layer.Rect.x / PixelsToUnits;
             float y = layer.Rect.y / PixelsToUnits;
 
@@ -1002,7 +1203,64 @@
         /// <param name="layer">The <see cref="Layer"/> used to create the <see cref="UnityEngine.UI.Text"/> from.</param>
         private static void CreateUIText(Layer layer)
         {
-            Color color = layer.FillColor;
+            if (UseTargetCanvasCoordinates)
+            {
+                Color uiColor = layer.FillColor;
+                uiColor = ApplyLayerOpacity(uiColor, layer);
+                Vector2 scaledSize = GetScaledLayerSize(layer.Rect);
+                float uiWidthPixels = scaledSize.x;
+                float uiHeightPixels = scaledSize.y;
+
+                GameObject uiObject = new GameObject(layer.Name, typeof(RectTransform));
+                uiObject.transform.SetParent(currentGroupGameObject.transform, false);
+
+                RectTransform uiTransform = uiObject.GetComponent<RectTransform>();
+                uiTransform.anchorMin = new Vector2(0.5f, 0.5f);
+                uiTransform.anchorMax = new Vector2(0.5f, 0.5f);
+                uiTransform.pivot = new Vector2(0.5f, 0.5f);
+                uiTransform.anchoredPosition = GetLocalAnchoredPosition(layer.Rect, currentGroupGameObject);
+                uiTransform.sizeDelta = new Vector2(uiWidthPixels, uiHeightPixels);
+
+                Font uiFont = GetFontForLayer(layer);
+                Text uiText = uiObject.AddComponent<Text>();
+                uiText.text = layer.Text;
+                uiText.font = uiFont;
+                uiText.rectTransform.sizeDelta = new Vector2(uiWidthPixels, uiHeightPixels);
+
+                float uiFontSize = layer.FontSize * GetTargetCanvasUniformScale();
+                float uiCeiling = Mathf.Ceil(uiFontSize);
+                if (uiFontSize < uiCeiling)
+                {
+                    float scaleFactor = uiCeiling / uiFontSize;
+                    uiText.fontSize = (int)uiCeiling;
+                    uiText.rectTransform.sizeDelta *= scaleFactor;
+                    uiText.rectTransform.localScale /= scaleFactor;
+                }
+                else
+                {
+                    uiText.fontSize = (int)uiFontSize;
+                }
+
+                uiText.color = uiColor;
+                uiText.alignment = TextAnchor.MiddleCenter;
+
+                switch (layer.Justification)
+                {
+                    case TextJustification.Left:
+                        uiText.alignment = TextAnchor.MiddleLeft;
+                        break;
+                    case TextJustification.Right:
+                        uiText.alignment = TextAnchor.MiddleRight;
+                        break;
+                    case TextJustification.Center:
+                        uiText.alignment = TextAnchor.MiddleCenter;
+                        break;
+                }
+
+                return;
+            }
+
+            Color color = ApplyLayerOpacity(layer.FillColor, layer);
 
             float x = layer.Rect.x / PixelsToUnits;
             float y = layer.Rect.y / PixelsToUnits;
@@ -1124,23 +1382,36 @@
 
                     image.sprite = CreateSprite(child);
 
-                    float x = child.Rect.x / PixelsToUnits;
-                    float y = child.Rect.y / PixelsToUnits;
-
-                    // Photoshop increase Y while going down. Unity increases Y while going up.  So, we need to reverse the Y position.
-                    y = (CanvasSize.y / PixelsToUnits) - y;
-
-                    // Photoshop uses the upper left corner as the pivot (0,0).  Unity defaults to use the center as (0,0), so we must offset the positions.
-                    x = x - ((CanvasSize.x / 2) / PixelsToUnits);
-                    y = y - ((CanvasSize.y / 2) / PixelsToUnits);
-
-                    float width = child.Rect.width / PixelsToUnits;
-                    float height = child.Rect.height / PixelsToUnits;
-
-                    image.gameObject.transform.position = new Vector3(x + (width / 2), y - (height / 2), currentDepth);
-
                     RectTransform transform = image.gameObject.GetComponent<RectTransform>();
-                    transform.sizeDelta = new Vector2(width, height);
+                    if (UseTargetCanvasCoordinates)
+                    {
+                        Vector2 scaledSize = GetScaledLayerSize(child.Rect);
+                        transform.anchorMin = new Vector2(0.5f, 0.5f);
+                        transform.anchorMax = new Vector2(0.5f, 0.5f);
+                        transform.pivot = new Vector2(0.5f, 0.5f);
+                        transform.anchoredPosition = GetLocalAnchoredPosition(
+                            child.Rect,
+                            button.gameObject.transform.parent != null ? button.gameObject.transform.parent.gameObject : null);
+                        transform.sizeDelta = scaledSize;
+                    }
+                    else
+                    {
+                        float x = child.Rect.x / PixelsToUnits;
+                        float y = child.Rect.y / PixelsToUnits;
+
+                        // Photoshop increase Y while going down. Unity increases Y while going up.  So, we need to reverse the Y position.
+                        y = (CanvasSize.y / PixelsToUnits) - y;
+
+                        // Photoshop uses the upper left corner as the pivot (0,0).  Unity defaults to use the center as (0,0), so we must offset the positions.
+                        x = x - ((CanvasSize.x / 2) / PixelsToUnits);
+                        y = y - ((CanvasSize.y / 2) / PixelsToUnits);
+
+                        float width = child.Rect.width / PixelsToUnits;
+                        float height = child.Rect.height / PixelsToUnits;
+
+                        image.gameObject.transform.position = new Vector3(x + (width / 2), y - (height / 2), currentDepth);
+                        transform.sizeDelta = new Vector2(width, height);
+                    }
 
                     button.targetGraphic = image;
                 }
@@ -1162,6 +1433,163 @@
                     // TODO: Create a child text game object
                 }
             }
+        }
+
+        /// <summary>
+        /// Converts a PSD layer rectangle to an anchored position relative to canvas center.
+        /// </summary>
+        /// <param name="rect">The PSD layer rectangle.</param>
+        /// <returns>Anchored position in UI pixels.</returns>
+        private static Vector2 GetAnchoredPositionFromLayerRect(Rect rect)
+        {
+            float scaleX = GetTargetCanvasScaleX();
+            float scaleY = GetTargetCanvasScaleY();
+            float x = (rect.x + (rect.width * 0.5f) - (CanvasSize.x * 0.5f)) * scaleX;
+            float y = ((CanvasSize.y * 0.5f) - (rect.y + (rect.height * 0.5f))) * scaleY;
+            return new Vector2(x, y);
+        }
+
+        /// <summary>
+        /// Gets scaled layer size for target canvas mapping.
+        /// </summary>
+        /// <param name="rect">The PSD layer rectangle.</param>
+        /// <returns>Scaled width and height.</returns>
+        private static Vector2 GetScaledLayerSize(Rect rect)
+        {
+            return new Vector2(rect.width * GetTargetCanvasScaleX(), rect.height * GetTargetCanvasScaleY());
+        }
+
+        /// <summary>
+        /// Gets scale ratio for X axis when mapping PSD pixels to target canvas.
+        /// </summary>
+        /// <returns>Scale factor on X axis.</returns>
+        private static float GetTargetCanvasScaleX()
+        {
+            if (!(UseTargetCanvasCoordinates && ScaleToTargetCanvas))
+            {
+                return 1f;
+            }
+
+            if (PreserveAspectWhenScalingToCanvas)
+            {
+                return GetTargetCanvasFitScale();
+            }
+
+            return CanvasSize.x > 0 ? TargetCanvasSize.x / CanvasSize.x : 1f;
+        }
+
+        /// <summary>
+        /// Gets scale ratio for Y axis when mapping PSD pixels to target canvas.
+        /// </summary>
+        /// <returns>Scale factor on Y axis.</returns>
+        private static float GetTargetCanvasScaleY()
+        {
+            if (!(UseTargetCanvasCoordinates && ScaleToTargetCanvas))
+            {
+                return 1f;
+            }
+
+            if (PreserveAspectWhenScalingToCanvas)
+            {
+                return GetTargetCanvasFitScale();
+            }
+
+            return CanvasSize.y > 0 ? TargetCanvasSize.y / CanvasSize.y : 1f;
+        }
+
+        /// <summary>
+        /// Gets a uniform scale ratio for text/font scaling.
+        /// </summary>
+        /// <returns>Uniform scale ratio.</returns>
+        private static float GetTargetCanvasUniformScale()
+        {
+            return Mathf.Min(GetTargetCanvasScaleX(), GetTargetCanvasScaleY());
+        }
+
+        /// <summary>
+        /// Gets fit scale that preserves PSD aspect ratio inside the target canvas.
+        /// </summary>
+        /// <returns>Uniform fit scale.</returns>
+        private static float GetTargetCanvasFitScale()
+        {
+            float scaleX = CanvasSize.x > 0 ? TargetCanvasSize.x / CanvasSize.x : 1f;
+            float scaleY = CanvasSize.y > 0 ? TargetCanvasSize.y / CanvasSize.y : 1f;
+            return Mathf.Min(scaleX, scaleY);
+        }
+
+        /// <summary>
+        /// Gets root rect size for the generated PSD root under target canvas.
+        /// </summary>
+        /// <returns>Root rect size.</returns>
+        private static Vector2 GetScaledRootSize()
+        {
+            if (!(UseTargetCanvasCoordinates && ScaleToTargetCanvas))
+            {
+                return CanvasSize;
+            }
+
+            if (!PreserveAspectWhenScalingToCanvas)
+            {
+                return TargetCanvasSize;
+            }
+
+            float fitScale = GetTargetCanvasFitScale();
+            return CanvasSize * fitScale;
+        }
+
+        /// <summary>
+        /// Applies Photoshop layer opacity to a Unity color.
+        /// </summary>
+        /// <param name="color">Base color.</param>
+        /// <param name="layer">Source PSD layer.</param>
+        /// <returns>Color with layer opacity applied on alpha.</returns>
+        private static Color ApplyLayerOpacity(Color color, Layer layer)
+        {
+            float layerOpacity = layer != null ? layer.Opacity / (float)byte.MaxValue : 1f;
+            color.a = Mathf.Clamp01(color.a) * layerOpacity;
+            return color;
+        }
+
+        /// <summary>
+        /// Converts a PSD layer rect to a local anchored position relative to the specified parent.
+        /// </summary>
+        /// <param name="rect">The PSD layer rectangle.</param>
+        /// <param name="parentObject">The intended parent object.</param>
+        /// <returns>Local anchored position for the created UI element.</returns>
+        private static Vector2 GetLocalAnchoredPosition(Rect rect, GameObject parentObject)
+        {
+            Vector2 absolute = GetAnchoredPositionFromLayerRect(rect);
+            Vector2 parentAbsolute = GetAbsoluteAnchoredPosition(parentObject);
+            return absolute - parentAbsolute;
+        }
+
+        /// <summary>
+        /// Gets cumulative anchored position from the current transform up to the root.
+        /// </summary>
+        /// <param name="currentObject">The object to accumulate from.</param>
+        /// <returns>Cumulative anchored position.</returns>
+        private static Vector2 GetAbsoluteAnchoredPosition(GameObject currentObject)
+        {
+            if (currentObject == null)
+            {
+                return Vector2.zero;
+            }
+
+            Vector2 offset = Vector2.zero;
+            Transform current = currentObject.transform;
+            Transform stopAt = rootPsdGameObject != null ? rootPsdGameObject.transform.parent : null;
+            while (current != null && current != stopAt)
+            {
+                RectTransform rectTransform = current as RectTransform;
+                if (rectTransform != null)
+                {
+                    offset += rectTransform.anchoredPosition;
+                }
+
+                current = current.parent;
+            }
+
+            return offset;
         }
         #endregion
     }

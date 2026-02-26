@@ -23,7 +23,17 @@ This project is explicitly based on the original `UnityPSDLayoutTool` and adds c
 6. 增加 Prefab 输出位置可配置：
    - 默认：Prefab 输出到生成资源文件夹的同级目录
    - 可选：Prefab 输出到生成资源文件夹内部
-7. 本分支重命名：
+7. 增加可选“目标 Canvas”对齐：
+   - 选择场景中的 Canvas 后，导入 UI 会按该 Canvas 像素坐标对齐
+   - 不选择时保持旧行为，自动创建 World Space Canvas
+8. 增加目标 Canvas 尺寸映射策略：
+   - 支持按 Canvas 尺寸缩放
+   - 支持“保持宽高比（不拉伸）”与“宽高独立缩放（可拉伸）”切换
+9. 修复透明度导入：
+   - 正确叠加 PSD 图层 Opacity 与蒙版 Alpha
+   - 文本对象同样会应用图层透明度
+10. 支持 Inspector 中英文切换（可持久化保存）。
+11. 本分支重命名：
    - 插件目录：`Assets/PSDLayoutTool2`
    - 命名空间：`PsdLayoutTool2`
 
@@ -45,7 +55,11 @@ This project is explicitly based on the original `UnityPSDLayoutTool` and adds c
 
 - `Maximum Depth`
 - `Pixels to Unity Units`
+- `Inspector Language`（中文 / English）
 - `Use Unity UI`
+- `Target Canvas (Optional)`
+- `Scale To Target Canvas`
+- `Preserve Aspect Ratio (No Stretch)`
 - `Output Mode`
 - `Output Folder Name`
 - `Prefab Output`
@@ -55,6 +69,23 @@ This project is explicitly based on the original `UnityPSDLayoutTool` and adds c
 - `Export Layers as Textures`
 - `Layout in Current Scene`
 - `Generate Prefab`
+
+#### Canvas 对齐模式（UI）
+
+- `Use Unity UI = true` 且 `Target Canvas` 已选择：生成的根节点会作为 `RectTransform` 挂到目标 Canvas 下，坐标按 PSD 像素映射，便于与现有 UI 版式对齐。
+- `Scale To Target Canvas = true`（默认）：会按目标 Canvas 尺寸进行缩放映射，解决 PSD 分辨率与 Canvas 分辨率不一致导致的错位。
+  - 若 Canvas 使用 `Canvas Scaler / Scale With Screen Size`，会优先按 `Reference Resolution` 对齐。
+- `Scale To Target Canvas = false`：保持 PSD 1:1 像素映射，适合你已经保证 PSD 与 Canvas 尺寸一致的情况。
+- `Preserve Aspect Ratio (No Stretch) = true`（默认）：等比缩放，避免 X/Y 比例不一致造成拉伸。
+- `Preserve Aspect Ratio (No Stretch) = false`：按宽高分别缩放，可能出现拉伸，但能完全铺满目标 Canvas 尺寸。
+- `Target Canvas` 留空或当前场景找不到该 Canvas：回退为旧行为，自动创建一个 World Space Canvas。
+- `Target Canvas` 是按场景层级路径保存的；如果你重命名或移动了 Canvas，请在 Inspector 里重新选择一次。
+
+#### 透明度说明
+
+- PSD 图层透明度（Opacity）会参与导出纹理与场景对象生成。
+- 图层蒙版 Alpha 会与图层 Alpha 正确相乘，不再出现透明度异常。
+- 文本层（UI Text / TextMesh）也会应用图层透明度。
 
 ### Photoshop 兼容性（栅格化）
 
@@ -132,7 +163,17 @@ The following changes were added on top of the original `UnityPSDLayoutTool`:
 6. Added configurable prefab output mode:
    - default: prefab saved as a sibling of the generated output folder
    - optional: prefab saved inside the generated output folder
-7. Renamed plugin folder and namespace for this fork:
+7. Added optional target-canvas alignment for Unity UI:
+   - when a scene canvas is selected, generated UI is aligned in that canvas coordinate space
+   - when empty or not found, importer falls back to creating a world-space canvas
+8. Added target-canvas scaling strategy options:
+   - scale to target canvas size
+   - choose between "preserve aspect ratio (no stretch)" and "independent X/Y scaling (may stretch)"
+9. Fixed transparency import:
+   - correctly composes PSD layer opacity with mask alpha
+   - text objects also apply layer opacity
+10. Added inspector language switch (Chinese / English), persisted in EditorPrefs.
+11. Renamed plugin folder and namespace for this fork:
    - Folder: `Assets/PSDLayoutTool2`
    - Namespace: `PsdLayoutTool2`
 
@@ -154,7 +195,11 @@ Main options include:
 
 - `Maximum Depth`
 - `Pixels to Unity Units`
+- `Inspector Language` (Chinese / English)
 - `Use Unity UI`
+- `Target Canvas (Optional)`
+- `Scale To Target Canvas`
+- `Preserve Aspect Ratio (No Stretch)`
 - `Output Mode`
 - `Output Folder Name`
 - `Prefab Output`
@@ -164,6 +209,23 @@ Actions:
 - `Export Layers as Textures`
 - `Layout in Current Scene`
 - `Generate Prefab`
+
+### Canvas Alignment Mode (UI)
+
+- When `Use Unity UI = true` and `Target Canvas` is set, the generated root is created as a `RectTransform` under that canvas and positioned in PSD pixel space.
+- `Scale To Target Canvas = true` (default) scales PSD positions and sizes to the selected canvas rect, which fixes mismatches when PSD and canvas resolutions differ.
+  - If the canvas uses `Canvas Scaler / Scale With Screen Size`, mapping uses `Reference Resolution` first.
+- `Scale To Target Canvas = false` keeps a strict 1:1 PSD pixel mapping.
+- `Preserve Aspect Ratio (No Stretch) = true` (default) uses uniform scaling to avoid stretch when aspect ratios differ.
+- `Preserve Aspect Ratio (No Stretch) = false` scales X/Y independently, which may stretch but fills target canvas size exactly.
+- When `Target Canvas` is empty or no longer found in scene, importer falls back to legacy behavior and creates a world-space canvas.
+- `Target Canvas` is persisted by hierarchy path; if you rename or move the canvas, reselect it in Inspector.
+
+### Transparency Notes
+
+- PSD layer opacity is applied during texture export and object generation.
+- Mask alpha is correctly multiplied with layer alpha.
+- Text layers (UI Text / TextMesh) also apply layer opacity.
 
 ## Photoshop Compatibility (Rasterize)
 

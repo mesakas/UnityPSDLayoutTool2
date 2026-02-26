@@ -41,9 +41,14 @@
                     // set the alpha
                     if (layer.SortedChannels.ContainsKey(-2))
                     {
-                        byte color = GetColor(layer.MaskData, x, y);
-                        colors[texturePosition].a = (byte)(colors[texturePosition].a * color);
+                        byte maskAlpha = GetColor(layer.MaskData, x, y);
+                        int maskedAlpha = (colors[texturePosition].a * maskAlpha) / byte.MaxValue;
+                        colors[texturePosition].a = (byte)maskedAlpha;
                     }
+
+                    // apply layer opacity (0-255) from Photoshop.
+                    int layeredAlpha = (colors[texturePosition].a * layer.Opacity) / byte.MaxValue;
+                    colors[texturePosition].a = (byte)layeredAlpha;
                 }
             }
 
