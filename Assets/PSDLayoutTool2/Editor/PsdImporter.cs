@@ -82,6 +82,22 @@
         private static int currentSortingOrder;
 
         /// <summary>
+        /// Stores explicit update selections for the active import run.
+        /// If null or disabled, existing files are overwritten as before.
+        /// </summary>
+        private static HashSet<string> selectedUpdatePathsForCurrentImport;
+
+        /// <summary>
+        /// Indicates whether current import should respect explicit overwrite selections.
+        /// </summary>
+        private static bool useExplicitUpdateSelection;
+
+        /// <summary>
+        /// Prevents opening multiple conflict-selection dialogs at the same time.
+        /// </summary>
+        private static bool isConflictSelectionDialogOpen;
+
+        /// <summary>
         /// Initializes static members of the <see cref="PsdImporter"/> class.
         /// </summary>
         static PsdImporter()
@@ -220,6 +236,17 @@
         /// <param name="asset">The path of to the .psd file relative to the project.</param>
         private static void Import(string asset)
         {
+            Import(asset, null, false);
+        }
+
+        /// <summary>
+        /// Imports a Photoshop document (.psd) file at the given path with optional preselected conflict handling.
+        /// </summary>
+        /// <param name="asset">The path of to the .psd file relative to the project.</param>
+        /// <param name="forcedSelection">Preselected conflict actions. Null means no explicit selection.</param>
+        /// <param name="skipConflictPrompt">True to bypass conflict prompts and apply <paramref name="forcedSelection"/> directly.</param>
+        private static void Import(string asset, ImportConflictSelection forcedSelection, bool skipConflictPrompt)
+        {
             currentDepth = MaximumDepth;
             currentSortingOrder = 0;
             UseTargetCanvasCoordinates = false;
@@ -236,58 +263,977 @@
             PsdName = Path.GetFileNameWithoutExtension(normalizedAssetPath);
 
             string outputRelativePath = GetOutputRootRelativePath(normalizedAssetPath);
-            currentPath = Path.Combine(GetFullProjectPath(), outputRelativePath.Replace('/', Path.DirectorySeparatorChar));
-            Directory.CreateDirectory(currentPath);
+            string outputFullPath = Path.Combine(GetFullProjectPath(), outputRelativePath.Replace('/', Path.DirectorySeparatorChar));
+            string prefabRelativePath = CreatePrefab ? GetPrefabRelativePath(outputRelativePath) : string.Empty;
 
-            if (LayoutInScene || CreatePrefab)
+            List<Layer> tree = BuildLayerTree(psd.Layers) ?? new List<Layer>();
+            ImportConflictAnalysis conflictAnalysis = AnalyzeImportConflicts(tree, outputRelativePath, outputFullPath, prefabRelativePath);
+
+            ImportConflictSelection effectiveSelection = forcedSelection;
+            if (!skipConflictPrompt && conflictAnalysis.HasExistingTargets)
             {
-                if (UseUnityUI)
+                bool updateExistingFiles = PromptForUpdatingExistingFiles(conflictAnalysis);
+                if (!updateExistingFiles)
                 {
-                    CreateUIEventSystem();
-                    Canvas targetCanvas = ResolveTargetCanvas();
-                    if (targetCanvas != null)
+                    return;
+                }
+
+                if (conflictAnalysis.HasSelectableEntries)
+                {
+                    if (isConflictSelectionDialogOpen)
                     {
-                        UseTargetCanvasCoordinates = true;
-                        TargetCanvasSize = GetTargetCanvasRectSize(targetCanvas);
-                        rootPsdGameObject = new GameObject(PsdName, typeof(RectTransform));
-                        RectTransform rootRect = rootPsdGameObject.GetComponent<RectTransform>();
-                        rootRect.SetParent(targetCanvas.transform, false);
-                        rootRect.anchorMin = new Vector2(0.5f, 0.5f);
-                        rootRect.anchorMax = new Vector2(0.5f, 0.5f);
-                        rootRect.pivot = new Vector2(0.5f, 0.5f);
-                        rootRect.anchoredPosition = Vector2.zero;
-                        rootRect.sizeDelta = GetScaledRootSize();
+                        EditorUtility.DisplayDialog(
+                            "PSDLayoutTool2",
+                            "已有一个更新/删除确认窗口正在打开，请先完成该操作。",
+                            "确定");
+                        return;
+                    }
+
+                    isConflictSelectionDialogOpen = true;
+                    ImportConflictSelection defaultSelection = CreateDefaultConflictSelection(conflictAnalysis);
+                    ImportConflictSelectionWindow.ShowDialog(
+                        conflictAnalysis,
+                        defaultSelection,
+                        selection =>
+                        {
+                            isConflictSelectionDialogOpen = false;
+                            if (selection == null || !selection.Confirmed)
+                            {
+                                return;
+                            }
+
+                            Import(asset, selection, true);
+                        });
+                    return;
+                }
+
+                effectiveSelection = CreateDefaultConflictSelection(conflictAnalysis);
+            }
+
+            ConfigureCurrentImportSelection(effectiveSelection);
+
+            try
+            {
+                currentPath = outputFullPath;
+                Directory.CreateDirectory(currentPath);
+
+                if (effectiveSelection != null)
+                {
+                    DeleteSelectedFiles(effectiveSelection.PathsToDelete, outputFullPath);
+                }
+
+                if (LayoutInScene || CreatePrefab)
+                {
+                    if (UseUnityUI)
+                    {
+                        CreateUIEventSystem();
+                        Canvas targetCanvas = ResolveTargetCanvas();
+                        if (targetCanvas != null)
+                        {
+                            UseTargetCanvasCoordinates = true;
+                            TargetCanvasSize = GetTargetCanvasRectSize(targetCanvas);
+                            rootPsdGameObject = new GameObject(PsdName, typeof(RectTransform));
+                            RectTransform rootRect = rootPsdGameObject.GetComponent<RectTransform>();
+                            rootRect.SetParent(targetCanvas.transform, false);
+                            rootRect.anchorMin = new Vector2(0.5f, 0.5f);
+                            rootRect.anchorMax = new Vector2(0.5f, 0.5f);
+                            rootRect.pivot = new Vector2(0.5f, 0.5f);
+                            rootRect.anchoredPosition = Vector2.zero;
+                            rootRect.sizeDelta = GetScaledRootSize();
+                        }
+                        else
+                        {
+                            CreateUICanvas();
+                            rootPsdGameObject = Canvas;
+                        }
                     }
                     else
                     {
-                        CreateUICanvas();
-                        rootPsdGameObject = Canvas;
+                        rootPsdGameObject = new GameObject(PsdName);
                     }
+
+                    currentGroupGameObject = rootPsdGameObject;
+                }
+
+                ExportTree(tree);
+
+                if (CreatePrefab)
+                {
+                    if (ShouldSavePrefab(prefabRelativePath))
+                    {
+                        PrefabUtility.SaveAsPrefabAsset(rootPsdGameObject, prefabRelativePath);
+                    }
+
+                    if (!LayoutInScene)
+                    {
+                        // if we are not flagged to layout in the scene, delete the GameObject used to generate the prefab
+                        UnityEngine.Object.DestroyImmediate(rootPsdGameObject);
+                    }
+                }
+
+                AssetDatabase.Refresh();
+            }
+            finally
+            {
+                ClearCurrentImportSelection();
+            }
+        }
+
+        /// <summary>
+        /// Compares generated texture outputs against existing files to compute update/delete candidates.
+        /// </summary>
+        /// <param name="tree">Layer tree for current PSD import.</param>
+        /// <param name="outputRelativePath">Output directory relative to project.</param>
+        /// <param name="outputFullPath">Output directory absolute path.</param>
+        /// <param name="prefabRelativePath">Prefab path relative to project.</param>
+        /// <returns>Conflict analysis data for this import run.</returns>
+        private static ImportConflictAnalysis AnalyzeImportConflicts(
+            List<Layer> tree,
+            string outputRelativePath,
+            string outputFullPath,
+            string prefabRelativePath)
+        {
+            ImportConflictAnalysis analysis = new ImportConflictAnalysis();
+            analysis.OutputRelativePath = outputRelativePath;
+            analysis.OutputFullPath = NormalizePath(outputFullPath);
+            analysis.PrefabRelativePath = prefabRelativePath;
+            if (!string.IsNullOrEmpty(prefabRelativePath))
+            {
+                analysis.PrefabFullPath = NormalizePath(
+                    Path.Combine(GetFullProjectPath(), prefabRelativePath.Replace('/', Path.DirectorySeparatorChar)));
+            }
+
+            analysis.HasExistingOutputDirectory = Directory.Exists(outputFullPath);
+            analysis.HasExistingPrefab = !string.IsNullOrEmpty(analysis.PrefabFullPath) && File.Exists(analysis.PrefabFullPath);
+
+            HashSet<string> generatedTexturePaths = CollectExpectedTexturePaths(tree, outputFullPath);
+            HashSet<string> existingTexturePaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (analysis.HasExistingOutputDirectory)
+            {
+                string[] existingFiles = Directory.GetFiles(outputFullPath, "*.png", SearchOption.AllDirectories);
+                foreach (string existingFile in existingFiles)
+                {
+                    existingTexturePaths.Add(NormalizePath(existingFile));
+                }
+            }
+
+            foreach (string existingFile in existingTexturePaths)
+            {
+                if (generatedTexturePaths.Contains(existingFile))
+                {
+                    analysis.SameNamePaths.Add(existingFile);
                 }
                 else
                 {
-                    rootPsdGameObject = new GameObject(PsdName);
+                    analysis.DeletedPaths.Add(existingFile);
                 }
-
-                currentGroupGameObject = rootPsdGameObject;
             }
 
-            List<Layer> tree = BuildLayerTree(psd.Layers);
-            ExportTree(tree);
-
-            if (CreatePrefab)
+            if (analysis.HasExistingPrefab)
             {
-                string prefabPath = GetPrefabRelativePath(outputRelativePath);
-                PrefabUtility.SaveAsPrefabAsset(rootPsdGameObject, prefabPath);
+                analysis.SameNamePaths.Add(analysis.PrefabFullPath);
+            }
 
-                if (!LayoutInScene)
+            analysis.SameNamePaths = analysis.SameNamePaths
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(path => ToDisplayPath(path), StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            analysis.DeletedPaths = analysis.DeletedPaths
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(path => ToDisplayPath(path), StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            return analysis;
+        }
+
+        /// <summary>
+        /// Creates the default conflict selection, which updates same-name files and deletes stale files.
+        /// </summary>
+        /// <param name="analysis">Current conflict analysis.</param>
+        /// <returns>Default conflict selection.</returns>
+        private static ImportConflictSelection CreateDefaultConflictSelection(ImportConflictAnalysis analysis)
+        {
+            ImportConflictSelection selection = new ImportConflictSelection
+            {
+                Confirmed = true
+            };
+
+            foreach (string path in analysis.SameNamePaths)
+            {
+                selection.PathsToUpdate.Add(NormalizePath(path));
+            }
+
+            foreach (string path in analysis.DeletedPaths)
+            {
+                selection.PathsToDelete.Add(NormalizePath(path));
+            }
+
+            return selection;
+        }
+
+        /// <summary>
+        /// Prompts the user to confirm whether existing targets should be updated.
+        /// </summary>
+        /// <param name="analysis">Current conflict analysis.</param>
+        /// <returns>True if user wants to continue updating; otherwise false.</returns>
+        private static bool PromptForUpdatingExistingFiles(ImportConflictAnalysis analysis)
+        {
+            StringBuilder messageBuilder = new StringBuilder();
+            messageBuilder.AppendLine("检测到已有同名导入目标：");
+            if (analysis.HasExistingOutputDirectory)
+            {
+                messageBuilder.AppendLine("纹理目录: " + analysis.OutputRelativePath);
+            }
+
+            if (analysis.HasExistingPrefab)
+            {
+                messageBuilder.AppendLine("预制体: " + analysis.PrefabRelativePath);
+            }
+
+            messageBuilder.AppendLine();
+            messageBuilder.AppendLine("是否要更新现有文件？");
+
+            return EditorUtility.DisplayDialog(
+                "PSDLayoutTool2",
+                messageBuilder.ToString(),
+                "更新",
+                "取消");
+        }
+
+        /// <summary>
+        /// Configures overwrite-selection state for the active import run.
+        /// </summary>
+        /// <param name="selection">Selected update/delete actions for this run.</param>
+        private static void ConfigureCurrentImportSelection(ImportConflictSelection selection)
+        {
+            useExplicitUpdateSelection = selection != null;
+            selectedUpdatePathsForCurrentImport = selection != null
+                ? new HashSet<string>(selection.PathsToUpdate, StringComparer.OrdinalIgnoreCase)
+                : null;
+        }
+
+        /// <summary>
+        /// Clears overwrite-selection state after an import run ends.
+        /// </summary>
+        private static void ClearCurrentImportSelection()
+        {
+            useExplicitUpdateSelection = false;
+            selectedUpdatePathsForCurrentImport = null;
+        }
+
+        /// <summary>
+        /// Deletes selected stale files and their meta files from the output directory.
+        /// </summary>
+        /// <param name="pathsToDelete">Files selected for deletion.</param>
+        /// <param name="outputFullPath">Import output root path.</param>
+        private static void DeleteSelectedFiles(HashSet<string> pathsToDelete, string outputFullPath)
+        {
+            if (pathsToDelete == null || pathsToDelete.Count == 0 || !Directory.Exists(outputFullPath))
+            {
+                return;
+            }
+
+            string normalizedRoot = NormalizePath(outputFullPath).TrimEnd('/');
+
+            foreach (string selectedPath in pathsToDelete)
+            {
+                string normalizedPath = NormalizePath(selectedPath);
+                if (!IsPathInsideDirectory(normalizedPath, normalizedRoot))
                 {
-                    // if we are not flagged to layout in the scene, delete the GameObject used to generate the prefab
-                    UnityEngine.Object.DestroyImmediate(rootPsdGameObject);
+                    continue;
+                }
+
+                DeleteFileWithMeta(normalizedPath);
+            }
+
+            DeleteEmptySubDirectories(outputFullPath);
+        }
+
+        /// <summary>
+        /// Determines whether the current import run can overwrite an existing generated file.
+        /// </summary>
+        /// <param name="filePath">Absolute path to the generated file.</param>
+        /// <returns>True if writing is allowed; otherwise false.</returns>
+        private static bool ShouldOverwriteExistingGeneratedFile(string filePath)
+        {
+            if (!File.Exists(filePath))
+            {
+                return true;
+            }
+
+            if (!useExplicitUpdateSelection)
+            {
+                return true;
+            }
+
+            return selectedUpdatePathsForCurrentImport != null &&
+                   selectedUpdatePathsForCurrentImport.Contains(NormalizePath(filePath));
+        }
+
+        /// <summary>
+        /// Determines whether the prefab should be saved for this import run.
+        /// </summary>
+        /// <param name="prefabRelativePath">Prefab path relative to project.</param>
+        /// <returns>True if prefab should be created/updated; otherwise false.</returns>
+        private static bool ShouldSavePrefab(string prefabRelativePath)
+        {
+            if (string.IsNullOrEmpty(prefabRelativePath))
+            {
+                return false;
+            }
+
+            string prefabFullPath = NormalizePath(
+                Path.Combine(GetFullProjectPath(), prefabRelativePath.Replace('/', Path.DirectorySeparatorChar)));
+
+            if (!File.Exists(prefabFullPath))
+            {
+                return true;
+            }
+
+            if (!useExplicitUpdateSelection)
+            {
+                return true;
+            }
+
+            return selectedUpdatePathsForCurrentImport != null &&
+                   selectedUpdatePathsForCurrentImport.Contains(prefabFullPath);
+        }
+
+        /// <summary>
+        /// Collects all texture files that would be generated by exporting the given layer tree.
+        /// </summary>
+        /// <param name="tree">Layer tree for the PSD.</param>
+        /// <param name="outputFullPath">Output root directory path.</param>
+        /// <returns>Set of absolute generated texture paths.</returns>
+        private static HashSet<string> CollectExpectedTexturePaths(List<Layer> tree, string outputFullPath)
+        {
+            HashSet<string> expectedPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (tree == null)
+            {
+                return expectedPaths;
+            }
+
+            for (int i = tree.Count - 1; i >= 0; i--)
+            {
+                CollectExpectedTexturePathsForLayer(tree[i], outputFullPath, expectedPaths);
+            }
+
+            return expectedPaths;
+        }
+
+        /// <summary>
+        /// Recursively collects generated texture paths for a single layer.
+        /// </summary>
+        /// <param name="layer">Layer to inspect.</param>
+        /// <param name="currentDirectory">Current output directory for this layer.</param>
+        /// <param name="result">Destination set for generated texture paths.</param>
+        private static void CollectExpectedTexturePathsForLayer(Layer layer, string currentDirectory, HashSet<string> result)
+        {
+            string safeLayerName = MakeNameSafe(layer.Name);
+            if (layer.Children.Count > 0 || layer.Rect.width == 0)
+            {
+                CollectExpectedTexturePathsForFolderLayer(layer, safeLayerName, currentDirectory, result);
+                return;
+            }
+
+            if (layer.IsTextLayer || layer.Rect.width <= 0)
+            {
+                return;
+            }
+
+            string texturePath = Path.Combine(currentDirectory, safeLayerName + ".png");
+            result.Add(NormalizePath(texturePath));
+        }
+
+        /// <summary>
+        /// Collects generated texture paths for folder/group layers.
+        /// </summary>
+        /// <param name="layer">Folder layer to inspect.</param>
+        /// <param name="safeLayerName">Layer name after <see cref="MakeNameSafe(string)"/>.</param>
+        /// <param name="currentDirectory">Current output directory for this layer.</param>
+        /// <param name="result">Destination set for generated texture paths.</param>
+        private static void CollectExpectedTexturePathsForFolderLayer(
+            Layer layer,
+            string safeLayerName,
+            string currentDirectory,
+            HashSet<string> result)
+        {
+            if (safeLayerName.ContainsIgnoreCase("|Button"))
+            {
+                CollectButtonTexturePaths(layer, currentDirectory, result);
+                return;
+            }
+
+            if (safeLayerName.ContainsIgnoreCase("|Animation"))
+            {
+                string animationLayerName = safeLayerName.ReplaceIgnoreCase("|Animation", string.Empty);
+                string[] nameParts = animationLayerName.Split(new[] { '|' }, StringSplitOptions.RemoveEmptyEntries);
+                string animationFolderName = nameParts.Length > 0 ? nameParts[0] : animationLayerName;
+                if (string.IsNullOrEmpty(animationFolderName))
+                {
+                    animationFolderName = "Animation";
+                }
+
+                string animationFolderPath = Path.Combine(currentDirectory, animationFolderName);
+                foreach (Layer child in layer.Children)
+                {
+                    if (child.Children.Count == 0 && child.Rect.width > 0)
+                    {
+                        string path = Path.Combine(animationFolderPath, child.Name + ".png");
+                        result.Add(NormalizePath(path));
+                    }
+                }
+
+                return;
+            }
+
+            string childDirectory = Path.Combine(currentDirectory, safeLayerName);
+            for (int i = layer.Children.Count - 1; i >= 0; i--)
+            {
+                CollectExpectedTexturePathsForLayer(layer.Children[i], childDirectory, result);
+            }
+        }
+
+        /// <summary>
+        /// Collects texture outputs produced by <c>|Button</c> layers.
+        /// </summary>
+        /// <param name="layer">Button layer.</param>
+        /// <param name="currentDirectory">Current output directory.</param>
+        /// <param name="result">Destination set for generated texture paths.</param>
+        private static void CollectButtonTexturePaths(Layer layer, string currentDirectory, HashSet<string> result)
+        {
+            foreach (Layer child in layer.Children)
+            {
+                string textureName;
+                if (!TryGetButtonTextureName(child, out textureName))
+                {
+                    continue;
+                }
+
+                if (child.Children.Count > 0 || child.Rect.width <= 0)
+                {
+                    continue;
+                }
+
+                string path = Path.Combine(currentDirectory, textureName + ".png");
+                result.Add(NormalizePath(path));
+            }
+        }
+
+        /// <summary>
+        /// Attempts to resolve the generated texture name for a button child layer.
+        /// </summary>
+        /// <param name="layer">Button child layer.</param>
+        /// <param name="textureName">Resolved output texture name.</param>
+        /// <returns>True if this child creates a texture; otherwise false.</returns>
+        private static bool TryGetButtonTextureName(Layer layer, out string textureName)
+        {
+            textureName = layer.Name;
+
+            if (layer.Name.ContainsIgnoreCase("|Disabled"))
+            {
+                textureName = layer.Name.ReplaceIgnoreCase("|Disabled", string.Empty);
+                return true;
+            }
+
+            if (layer.Name.ContainsIgnoreCase("|Highlighted"))
+            {
+                textureName = layer.Name.ReplaceIgnoreCase("|Highlighted", string.Empty);
+                return true;
+            }
+
+            if (layer.Name.ContainsIgnoreCase("|Pressed"))
+            {
+                textureName = layer.Name.ReplaceIgnoreCase("|Pressed", string.Empty);
+                return true;
+            }
+
+            if (layer.Name.ContainsIgnoreCase("|Default") ||
+                layer.Name.ContainsIgnoreCase("|Enabled") ||
+                layer.Name.ContainsIgnoreCase("|Normal") ||
+                layer.Name.ContainsIgnoreCase("|Up"))
+            {
+                textureName = layer.Name.ReplaceIgnoreCase("|Default", string.Empty);
+                textureName = textureName.ReplaceIgnoreCase("|Enabled", string.Empty);
+                textureName = textureName.ReplaceIgnoreCase("|Normal", string.Empty);
+                textureName = textureName.ReplaceIgnoreCase("|Up", string.Empty);
+                return true;
+            }
+
+            if (layer.Name.ContainsIgnoreCase("|Text") && !layer.IsTextLayer)
+            {
+                textureName = layer.Name.ReplaceIgnoreCase("|Text", string.Empty);
+                return true;
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// Converts full file paths to normalized display paths.
+        /// </summary>
+        /// <param name="fullPath">Absolute file path.</param>
+        /// <returns>Path relative to project where possible.</returns>
+        private static string ToDisplayPath(string fullPath)
+        {
+            string normalizedFullPath = NormalizePath(fullPath);
+            string projectPath = NormalizePath(GetFullProjectPath()).TrimEnd('/');
+            if (normalizedFullPath.StartsWith(projectPath, StringComparison.OrdinalIgnoreCase))
+            {
+                return normalizedFullPath.Substring(projectPath.Length).TrimStart('/');
+            }
+
+            return normalizedFullPath;
+        }
+
+        /// <summary>
+        /// Normalizes a path for case-insensitive comparison.
+        /// </summary>
+        /// <param name="path">Path to normalize.</param>
+        /// <returns>Normalized absolute path using forward slashes.</returns>
+        private static string NormalizePath(string path)
+        {
+            return Path.GetFullPath(path).Replace('\\', '/');
+        }
+
+        /// <summary>
+        /// Returns whether the given path is under the specified root directory.
+        /// </summary>
+        /// <param name="path">Path to check.</param>
+        /// <param name="rootDirectory">Root directory path.</param>
+        /// <returns>True if inside root; otherwise false.</returns>
+        private static bool IsPathInsideDirectory(string path, string rootDirectory)
+        {
+            string normalizedRoot = rootDirectory.TrimEnd('/');
+            string normalizedPath = path.TrimEnd('/');
+            return normalizedPath.StartsWith(normalizedRoot + "/", StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>
+        /// Deletes a file and its meta file if they exist.
+        /// </summary>
+        /// <param name="filePath">Absolute file path.</param>
+        private static void DeleteFileWithMeta(string filePath)
+        {
+            try
+            {
+                if (File.Exists(filePath))
+                {
+                    File.Delete(filePath);
+                }
+
+                string metaPath = filePath + ".meta";
+                if (File.Exists(metaPath))
+                {
+                    File.Delete(metaPath);
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning(string.Format("Failed to delete file '{0}': {1}", filePath, ex.Message));
+            }
+        }
+
+        /// <summary>
+        /// Deletes empty subdirectories under the specified root directory.
+        /// </summary>
+        /// <param name="rootDirectory">Root directory to clean.</param>
+        private static void DeleteEmptySubDirectories(string rootDirectory)
+        {
+            if (!Directory.Exists(rootDirectory))
+            {
+                return;
+            }
+
+            foreach (string subDirectory in Directory.GetDirectories(rootDirectory))
+            {
+                DeleteEmptySubDirectories(subDirectory);
+
+                bool hasFiles = Directory.GetFiles(subDirectory).Length > 0;
+                bool hasDirectories = Directory.GetDirectories(subDirectory).Length > 0;
+                if (hasFiles || hasDirectories)
+                {
+                    continue;
+                }
+
+                try
+                {
+                    Directory.Delete(subDirectory);
+                    string metaPath = subDirectory + ".meta";
+                    if (File.Exists(metaPath))
+                    {
+                        File.Delete(metaPath);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Debug.LogWarning(string.Format("Failed to remove directory '{0}': {1}", subDirectory, ex.Message));
+                }
+            }
+        }
+
+        /// <summary>
+        /// Stores analyzed import conflicts for a single PSD import.
+        /// </summary>
+        private sealed class ImportConflictAnalysis
+        {
+            /// <summary>
+            /// Initializes a new instance of the <see cref="ImportConflictAnalysis"/> class.
+            /// </summary>
+            public ImportConflictAnalysis()
+            {
+                SameNamePaths = new List<string>();
+                DeletedPaths = new List<string>();
+            }
+
+            /// <summary>
+            /// Gets or sets a value indicating whether the output folder already exists.
+            /// </summary>
+            public bool HasExistingOutputDirectory { get; set; }
+
+            /// <summary>
+            /// Gets or sets a value indicating whether the target prefab already exists.
+            /// </summary>
+            public bool HasExistingPrefab { get; set; }
+
+            /// <summary>
+            /// Gets or sets the output folder path relative to project.
+            /// </summary>
+            public string OutputRelativePath { get; set; }
+
+            /// <summary>
+            /// Gets or sets the output folder path as a normalized full path.
+            /// </summary>
+            public string OutputFullPath { get; set; }
+
+            /// <summary>
+            /// Gets or sets the prefab path relative to project.
+            /// </summary>
+            public string PrefabRelativePath { get; set; }
+
+            /// <summary>
+            /// Gets or sets the prefab path as a normalized full path.
+            /// </summary>
+            public string PrefabFullPath { get; set; }
+
+            /// <summary>
+            /// Gets same-name files that can be updated.
+            /// </summary>
+            public List<string> SameNamePaths { get; private set; }
+
+            /// <summary>
+            /// Gets stale files that can be deleted.
+            /// </summary>
+            public List<string> DeletedPaths { get; private set; }
+
+            /// <summary>
+            /// Gets a value indicating whether any existing import target was found.
+            /// </summary>
+            public bool HasExistingTargets
+            {
+                get
+                {
+                    return HasExistingOutputDirectory || HasExistingPrefab;
                 }
             }
 
-            AssetDatabase.Refresh();
+            /// <summary>
+            /// Gets a value indicating whether there are selectable entries for update/delete.
+            /// </summary>
+            public bool HasSelectableEntries
+            {
+                get
+                {
+                    return SameNamePaths.Count > 0 || DeletedPaths.Count > 0;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Stores user-selected update/delete operations for an import run.
+        /// </summary>
+        private sealed class ImportConflictSelection
+        {
+            /// <summary>
+            /// Initializes a new instance of the <see cref="ImportConflictSelection"/> class.
+            /// </summary>
+            public ImportConflictSelection()
+            {
+                PathsToUpdate = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                PathsToDelete = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            }
+
+            /// <summary>
+            /// Gets or sets a value indicating whether the selection is confirmed by user.
+            /// </summary>
+            public bool Confirmed { get; set; }
+
+            /// <summary>
+            /// Gets files selected for overwrite/update.
+            /// </summary>
+            public HashSet<string> PathsToUpdate { get; private set; }
+
+            /// <summary>
+            /// Gets files selected for deletion.
+            /// </summary>
+            public HashSet<string> PathsToDelete { get; private set; }
+        }
+
+        /// <summary>
+        /// UI entry representing a selectable file operation.
+        /// </summary>
+        private sealed class ConflictPathOption
+        {
+            /// <summary>
+            /// Gets or sets the normalized full file path.
+            /// </summary>
+            public string FullPath { get; set; }
+
+            /// <summary>
+            /// Gets or sets the display path shown in the dialog.
+            /// </summary>
+            public string DisplayPath { get; set; }
+
+            /// <summary>
+            /// Gets or sets a value indicating whether this entry is selected.
+            /// </summary>
+            public bool Selected { get; set; }
+        }
+
+        /// <summary>
+        /// Selection window used to choose which same-name files to update and which stale files to delete.
+        /// </summary>
+        private sealed class ImportConflictSelectionWindow : EditorWindow
+        {
+            /// <summary>
+            /// Same-name options.
+            /// </summary>
+            private readonly List<ConflictPathOption> updateOptions = new List<ConflictPathOption>();
+
+            /// <summary>
+            /// Stale-file options.
+            /// </summary>
+            private readonly List<ConflictPathOption> deleteOptions = new List<ConflictPathOption>();
+
+            /// <summary>
+            /// Scroll position for list rendering.
+            /// </summary>
+            private Vector2 scrollPosition;
+
+            /// <summary>
+            /// Callback fired once dialog is closed.
+            /// </summary>
+            private Action<ImportConflictSelection> onClose;
+
+            /// <summary>
+            /// Guards against invoking callback more than once.
+            /// </summary>
+            private bool callbackSent;
+
+            /// <summary>
+            /// Opens the conflict selection window.
+            /// </summary>
+            /// <param name="analysis">Conflict analysis data.</param>
+            /// <param name="defaultSelection">Default checked entries.</param>
+            /// <param name="onCloseCallback">Callback invoked on confirm/cancel.</param>
+            public static void ShowDialog(
+                ImportConflictAnalysis analysis,
+                ImportConflictSelection defaultSelection,
+                Action<ImportConflictSelection> onCloseCallback)
+            {
+                ImportConflictSelectionWindow window = CreateInstance<ImportConflictSelectionWindow>();
+                window.titleContent = new GUIContent("PSD 更新与删除");
+                window.minSize = new Vector2(760f, 420f);
+                window.Initialize(analysis, defaultSelection, onCloseCallback);
+                window.ShowUtility();
+                window.Focus();
+            }
+
+            /// <summary>
+            /// Initializes this window with selectable entries.
+            /// </summary>
+            /// <param name="analysis">Conflict analysis data.</param>
+            /// <param name="defaultSelection">Default checked entries.</param>
+            /// <param name="onCloseCallback">Callback invoked on confirm/cancel.</param>
+            private void Initialize(
+                ImportConflictAnalysis analysis,
+                ImportConflictSelection defaultSelection,
+                Action<ImportConflictSelection> onCloseCallback)
+            {
+                onClose = onCloseCallback;
+
+                HashSet<string> defaultUpdates = defaultSelection != null
+                    ? defaultSelection.PathsToUpdate
+                    : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+                HashSet<string> defaultDeletes = defaultSelection != null
+                    ? defaultSelection.PathsToDelete
+                    : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+                foreach (string sameNamePath in analysis.SameNamePaths)
+                {
+                    string normalizedPath = NormalizePath(sameNamePath);
+                    updateOptions.Add(new ConflictPathOption
+                    {
+                        FullPath = normalizedPath,
+                        DisplayPath = ToDisplayPath(normalizedPath),
+                        Selected = defaultUpdates.Contains(normalizedPath)
+                    });
+                }
+
+                foreach (string stalePath in analysis.DeletedPaths)
+                {
+                    string normalizedPath = NormalizePath(stalePath);
+                    deleteOptions.Add(new ConflictPathOption
+                    {
+                        FullPath = normalizedPath,
+                        DisplayPath = ToDisplayPath(normalizedPath),
+                        Selected = defaultDeletes.Contains(normalizedPath)
+                    });
+                }
+            }
+
+            /// <summary>
+            /// Draws window GUI.
+            /// </summary>
+            private void OnGUI()
+            {
+                EditorGUILayout.HelpBox(
+                    "勾选“同名文件”会覆盖现有文件；勾选“删除文件”会移除旧文件。未勾选项将保持不变。",
+                    MessageType.Info);
+
+                scrollPosition = EditorGUILayout.BeginScrollView(scrollPosition);
+                DrawOptionsSection("同名文件（勾选后更新）", updateOptions, "没有同名文件。");
+                GUILayout.Space(8f);
+                DrawOptionsSection("删除文件（勾选后删除）", deleteOptions, "没有可删除文件。");
+                EditorGUILayout.EndScrollView();
+
+                GUILayout.FlexibleSpace();
+                EditorGUILayout.BeginHorizontal();
+                if (GUILayout.Button("取消", GUILayout.Height(28f)))
+                {
+                    CloseWithCancel();
+                }
+
+                if (GUILayout.Button("确定", GUILayout.Height(28f)))
+                {
+                    CloseWithSelection();
+                }
+
+                EditorGUILayout.EndHorizontal();
+            }
+
+            /// <summary>
+            /// Ensures cancellation callback is emitted when window is closed directly.
+            /// </summary>
+            private void OnDestroy()
+            {
+                if (!callbackSent)
+                {
+                    NotifyClose(new ImportConflictSelection { Confirmed = false });
+                }
+            }
+
+            /// <summary>
+            /// Draws one selectable section.
+            /// </summary>
+            /// <param name="title">Section title.</param>
+            /// <param name="options">Selectable options.</param>
+            /// <param name="emptyMessage">Message shown when no options exist.</param>
+            private static void DrawOptionsSection(string title, List<ConflictPathOption> options, string emptyMessage)
+            {
+                EditorGUILayout.LabelField(title, EditorStyles.boldLabel);
+                if (options.Count == 0)
+                {
+                    EditorGUILayout.LabelField(emptyMessage);
+                    return;
+                }
+
+                EditorGUILayout.BeginHorizontal();
+                if (GUILayout.Button("全选", GUILayout.Width(70f)))
+                {
+                    SetSelection(options, true);
+                }
+
+                if (GUILayout.Button("全不选", GUILayout.Width(70f)))
+                {
+                    SetSelection(options, false);
+                }
+
+                EditorGUILayout.EndHorizontal();
+
+                foreach (ConflictPathOption option in options)
+                {
+                    option.Selected = EditorGUILayout.ToggleLeft(option.DisplayPath, option.Selected);
+                }
+            }
+
+            /// <summary>
+            /// Sets selection state for all options in one section.
+            /// </summary>
+            /// <param name="options">Options to update.</param>
+            /// <param name="selected">Target selected state.</param>
+            private static void SetSelection(List<ConflictPathOption> options, bool selected)
+            {
+                foreach (ConflictPathOption option in options)
+                {
+                    option.Selected = selected;
+                }
+            }
+
+            /// <summary>
+            /// Closes window and emits confirmed selection.
+            /// </summary>
+            private void CloseWithSelection()
+            {
+                ImportConflictSelection selection = new ImportConflictSelection
+                {
+                    Confirmed = true
+                };
+
+                foreach (ConflictPathOption option in updateOptions.Where(option => option.Selected))
+                {
+                    selection.PathsToUpdate.Add(option.FullPath);
+                }
+
+                foreach (ConflictPathOption option in deleteOptions.Where(option => option.Selected))
+                {
+                    selection.PathsToDelete.Add(option.FullPath);
+                }
+
+                NotifyClose(selection);
+                Close();
+            }
+
+            /// <summary>
+            /// Closes window and emits cancellation.
+            /// </summary>
+            private void CloseWithCancel()
+            {
+                NotifyClose(new ImportConflictSelection { Confirmed = false });
+                Close();
+            }
+
+            /// <summary>
+            /// Emits close callback once.
+            /// </summary>
+            /// <param name="selection">Selection result.</param>
+            private void NotifyClose(ImportConflictSelection selection)
+            {
+                if (callbackSent)
+                {
+                    return;
+                }
+
+                callbackSent = true;
+                Action<ImportConflictSelection> callback = onClose;
+                onClose = null;
+                if (callback != null)
+                {
+                    callback(selection);
+                }
+            }
         }
 
         /// <summary>
@@ -797,10 +1743,14 @@
 
             if (layer.Children.Count == 0 && layer.Rect.width > 0)
             {
+                file = Path.Combine(currentPath, layer.Name + ".png");
+                if (!ShouldOverwriteExistingGeneratedFile(file))
+                {
+                    return file;
+                }
+
                 // decode the layer into a texture
                 Texture2D texture = ImageDecoder.DecodeImage(layer);
-
-                file = Path.Combine(currentPath, layer.Name + ".png");
 
                 File.WriteAllBytes(file, texture.EncodeToPNG());
             }
