@@ -429,15 +429,20 @@
                 }
             }
 
-            analysis.SameNamePaths = analysis.SameNamePaths
+            List<string> sortedSameNamePaths = analysis.SameNamePaths
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .OrderBy(path => ToDisplayPath(path), StringComparer.OrdinalIgnoreCase)
                 .ToList();
 
-            analysis.DeletedPaths = analysis.DeletedPaths
+            List<string> sortedDeletedPaths = analysis.DeletedPaths
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .OrderBy(path => ToDisplayPath(path), StringComparer.OrdinalIgnoreCase)
                 .ToList();
+
+            analysis.SameNamePaths.Clear();
+            analysis.SameNamePaths.AddRange(sortedSameNamePaths);
+            analysis.DeletedPaths.Clear();
+            analysis.DeletedPaths.AddRange(sortedDeletedPaths);
 
             return analysis;
         }
