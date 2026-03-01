@@ -429,11 +429,6 @@
                 }
             }
 
-            if (analysis.HasExistingPrefab)
-            {
-                analysis.SameNamePaths.Add(analysis.PrefabFullPath);
-            }
-
             analysis.SameNamePaths = analysis.SameNamePaths
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .OrderBy(path => ToDisplayPath(path), StringComparer.OrdinalIgnoreCase)
@@ -586,18 +581,8 @@
             string prefabFullPath = NormalizePath(
                 Path.Combine(GetFullProjectPath(), prefabRelativePath.Replace('/', Path.DirectorySeparatorChar)));
 
-            if (!File.Exists(prefabFullPath))
-            {
-                return true;
-            }
-
-            if (!useExplicitUpdateSelection)
-            {
-                return true;
-            }
-
-            return selectedUpdatePathsForCurrentImport != null &&
-                   selectedUpdatePathsForCurrentImport.Contains(prefabFullPath);
+            // Re-import should not overwrite an existing prefab, so user-adjusted anchors/components stay intact.
+            return !File.Exists(prefabFullPath);
         }
 
         /// <summary>
