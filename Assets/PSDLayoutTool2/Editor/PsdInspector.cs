@@ -64,6 +64,16 @@
         private const string PreserveAspectPrefKey = "PsdLayoutTool2.PreserveAspectWhenScalingToCanvas";
 
         /// <summary>
+        /// EditorPrefs key for auto anchor by name.
+        /// </summary>
+        private const string AutoAnchorByNamePrefKey = "PsdLayoutTool2.EnableAutoAnchorByName";
+
+        /// <summary>
+        /// EditorPrefs key for default global root anchoring.
+        /// </summary>
+        private const string RootGlobalAnchorPrefKey = "PsdLayoutTool2.RootUseGlobalAnchorByDefault";
+
+        /// <summary>
         /// EditorPrefs key for inspector display language.
         /// </summary>
         private const string LanguagePrefKey = "PsdLayoutTool2.InspectorLanguage";
@@ -125,6 +135,16 @@
             if (EditorPrefs.HasKey(PreserveAspectPrefKey))
             {
                 PsdImporter.PreserveAspectWhenScalingToCanvas = EditorPrefs.GetBool(PreserveAspectPrefKey, true);
+            }
+
+            if (EditorPrefs.HasKey(AutoAnchorByNamePrefKey))
+            {
+                PsdImporter.EnableAutoAnchorByName = EditorPrefs.GetBool(AutoAnchorByNamePrefKey, true);
+            }
+
+            if (EditorPrefs.HasKey(RootGlobalAnchorPrefKey))
+            {
+                PsdImporter.RootUseGlobalAnchorByDefault = EditorPrefs.GetBool(RootGlobalAnchorPrefKey, true);
             }
 
             if (EditorPrefs.HasKey(LanguagePrefKey))
@@ -233,6 +253,20 @@
                             preserveAspectLabel,
                             PsdImporter.PreserveAspectWhenScalingToCanvas);
                         EditorGUI.EndDisabledGroup();
+
+                        GUIContent autoAnchorLabel = LocalizedContent(
+                            "按名称自动设置锚点",
+                            "Auto Anchor By Name",
+                            "当图层或文件夹名称以 左上、左下、右上、右下、中间、左中、右中、上中、下中、上、下、左、右、全局 开头时，自动设置 UI 锚点。",
+                            "Automatically sets UI anchors when a layer or folder name starts with 左上, 左下, 右上, 右下, 中间, 左中, 右中, 上中, 下中, 上, 下, 左, 右, or 全局.");
+                        PsdImporter.EnableAutoAnchorByName = EditorGUILayout.Toggle(autoAnchorLabel, PsdImporter.EnableAutoAnchorByName);
+
+                        GUIContent rootGlobalLabel = LocalizedContent(
+                            "ROOT 默认使用全局锚点",
+                            "Root Uses Global By Default",
+                            "开启后，最外层导入根节点会自动全拉伸到父 Canvas，四边距为 0。",
+                            "When enabled, the outermost generated root stretches to the parent canvas with zero margins.");
+                        PsdImporter.RootUseGlobalAnchorByDefault = EditorGUILayout.Toggle(rootGlobalLabel, PsdImporter.RootUseGlobalAnchorByDefault);
                     }
 
                     GUIContent outputModeLabel = LocalizedContent(
@@ -266,12 +300,14 @@
                         EditorPrefs.SetString(TargetCanvasPathPrefKey, PsdImporter.TargetCanvasPath ?? string.Empty);
                         EditorPrefs.SetBool(ScaleToTargetCanvasPrefKey, PsdImporter.ScaleToTargetCanvas);
                         EditorPrefs.SetBool(PreserveAspectPrefKey, PsdImporter.PreserveAspectWhenScalingToCanvas);
+                        EditorPrefs.SetBool(AutoAnchorByNamePrefKey, PsdImporter.EnableAutoAnchorByName);
+                        EditorPrefs.SetBool(RootGlobalAnchorPrefKey, PsdImporter.RootUseGlobalAnchorByDefault);
                     }
 
                     EditorGUILayout.HelpBox(
                         Localize(
-                            "提示：标签匹配不区分大小写。|Button 仅在启用 Unity UI 时生效，|Animation 仅在非 UI 模式生效。",
-                            "Tip: Tag matching is case-insensitive. |Button only works when Unity UI is enabled, and |Animation only works in non-UI mode."),
+                            "提示：标签匹配不区分大小写。|Button 仅在启用 Unity UI 时生效，|Animation 仅在非 UI 模式生效。\n命名前缀必须写在名称开头，例如：左上关闭按钮、全局背景。\n上/下/左/右 会按单点锚点处理，不会做边缘拉伸；全局 会让 UI 节点四边距为 0，其中图片会额外按比例覆盖父节点。\n如果文件夹本身带锚点前缀，则其中没有前缀的子项会默认继承父级锚点。\n所有导入生成的 Unity UI Image 都会默认开启 Image.preserveAspect。\"保持宽高比（不拉伸）\" 只控制 PSD 到目标 Canvas 的坐标缩放，不等同于 Image.preserveAspect。",
+                            "Tip: Tag matching is case-insensitive. |Button only works when Unity UI is enabled, and |Animation only works in non-UI mode.\nAnchor prefixes must be written at the start of the name, for example: 左上CloseButton or 全局Background.\n上/下/左/右 use point anchors instead of edge stretch; 全局 gives zero margins, and images additionally cover the parent while keeping aspect.\nIf a folder has an anchor prefix, child items without their own prefix inherit the parent's anchor.\nAll generated Unity UI Images enable Image.preserveAspect by default. \"Preserve Aspect Ratio (No Stretch)\" only controls PSD-to-canvas coordinate scaling and is not the same as Image.preserveAspect."),
                         MessageType.Info);
 
                     // draw our custom buttons for PSD files

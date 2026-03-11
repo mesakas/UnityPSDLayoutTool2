@@ -60,6 +60,8 @@ This project is explicitly based on the original `UnityPSDLayoutTool` and adds c
 - `目标 Canvas（可选）`
 - `匹配目标 Canvas 尺寸`
 - `保持宽高比（不拉伸）`
+- `按名称自动设置锚点`
+- `ROOT 默认使用全局锚点`
 - `资源输出位置`
 - `输出文件夹名`
 - `Prefab 输出位置`
@@ -93,6 +95,20 @@ This project is explicitly based on the original `UnityPSDLayoutTool` and adds c
 - 隐藏的文本层也会按栅格化结果导出为贴图资源。
 - 同一父级下如果存在同名图层或同名文件夹，导入时会自动追加稳定后缀，例如 `_2`、`_3`。
 - 这个唯一命名规则会参与重复导入时的更新/删除匹配；只要父级结构和同名项相对顺序不变，旧资源路径就会稳定复用。
+
+#### 命名锚点与图片保比例
+
+- 仅在 `Use Unity UI = true` 时生效。
+- 同时适用于“目标 Canvas 对齐”模式和“自动创建 World Space Canvas”模式。
+- 该功能通过 Inspector 选项控制，不会在导入时额外弹出确认框。
+- 当图层或文件夹名称以这些前缀开头时，会自动设置锚点：`左上`、`左下`、`右上`、`右下`、`中间`、`左中`、`右中`、`上中`、`下中`、`上`、`下`、`左`、`右`、`全局`。
+- 前缀必须写在名称开头，例如：`左上关闭按钮`、`全局背景`。
+- `上 / 下 / 左 / 右` 会按单点锚点处理，不会做边缘拉伸。
+- `全局` 会让 UI 节点四边距为 0；如果该节点是图片，则会在四边距为 0 的基础上按比例覆盖父节点，不会被拉伸变形。
+- 如果文件夹本身带锚点前缀，则其中没有前缀的子项会默认继承父级锚点。
+- 最外层 ROOT 可通过 Inspector 的 `ROOT 默认使用全局锚点` 控制；开启后即使 ROOT 名称本身没有前缀，也会默认全拉伸到父 Canvas。
+- 所有导入生成的 Unity UI `Image` 都会默认开启 `Image.preserveAspect = true`，用于降低运行时意外拉伸风险。
+- Inspector 中的 `保持宽高比（不拉伸）` 只控制 PSD 到目标 Canvas 的坐标缩放策略，不等同于 `Image.preserveAspect`。
 
 ### Photoshop 兼容性（栅格化）
 
@@ -203,6 +219,8 @@ Main options include:
 - `Target Canvas (Optional)`
 - `Scale To Target Canvas`
 - `Preserve Aspect Ratio (No Stretch)`
+- `Auto Anchor By Name`
+- `Root Uses Global By Default`
 - `Output Directory`
 - `Output Folder Name`
 - `Prefab Output`
@@ -236,6 +254,20 @@ Actions:
 - Hidden text layers are also rasterized and exported as texture assets.
 - When sibling layers or folders share the same name, the importer adds stable suffixes such as `_2`, `_3` to keep generated assets unique.
 - The same stable naming is used by re-import conflict matching, so existing generated files continue to match as long as the parent structure and relative order of same-name siblings stay the same.
+
+### Name-Based Anchors And Image Aspect
+
+- This only applies when `Use Unity UI = true`.
+- It works in both target-canvas alignment mode and the fallback world-space canvas mode.
+- This behavior is controlled through Inspector options and does not show an extra import-time confirmation dialog.
+- When a layer or folder name starts with one of these prefixes, the importer automatically sets the anchor: `左上`, `左下`, `右上`, `右下`, `中间`, `左中`, `右中`, `上中`, `下中`, `上`, `下`, `左`, `右`, `全局`.
+- The prefix must be at the start of the name, for example `左上CloseButton` or `全局Background`.
+- `上 / 下 / 左 / 右` are treated as point anchors, not edge stretch instructions.
+- `全局` gives the UI node zero margins; if that node is an image, it additionally covers the parent while preserving aspect ratio instead of stretching.
+- If a folder has an anchor prefix, child items without their own prefix inherit the parent's anchor.
+- The outer ROOT can default to `全局` through the Inspector option `Root Uses Global By Default`; when enabled, the generated root stretches to the parent canvas even if its own name has no prefix.
+- Every generated Unity UI `Image` now enables `Image.preserveAspect = true` by default to reduce accidental stretching at runtime.
+- `Preserve Aspect Ratio (No Stretch)` in Inspector only controls PSD-to-canvas coordinate scaling and is not the same setting as `Image.preserveAspect`.
 
 ## Photoshop Compatibility (Rasterize)
 

@@ -61,9 +61,19 @@
         private static GameObject rootPsdGameObject;
 
         /// <summary>
+        /// The top-level object that should be saved as prefab or destroyed after import.
+        /// </summary>
+        private static GameObject importRootGameObject;
+
+        /// <summary>
         /// The <see cref="GameObject"/> representing the current group (folder) we are processing.
         /// </summary>
         private static GameObject currentGroupGameObject;
+
+        /// <summary>
+        /// The current UI layout context used to place child RectTransforms.
+        /// </summary>
+        private static UiLayoutContext currentGroupLayoutContext;
 
         /// <summary>
         /// The current depth (Z axis position) that sprites will be placed on.  It is initialized to the MaximumDepth ("back" depth) and it is automatically
@@ -113,6 +123,45 @@
             Highlighted,
             Disabled,
             TextImage
+        }
+
+        /// <summary>
+        /// Supported anchor presets parsed from layer or folder names.
+        /// </summary>
+        private enum AnchorNamePreset
+        {
+            None,
+            Global,
+            TopLeft,
+            BottomLeft,
+            TopRight,
+            BottomRight,
+            Center,
+            LeftMiddle,
+            RightMiddle,
+            TopMiddle,
+            BottomMiddle
+        }
+
+        /// <summary>
+        /// Describes how one parent RectTransform maps PSD space into its local space.
+        /// </summary>
+        private struct UiLayoutContext
+        {
+            /// <summary>
+            /// Gets or sets the PSD-space rectangle represented by this layout context.
+            /// </summary>
+            public Rect PsdReferenceRect { get; set; }
+
+            /// <summary>
+            /// Gets or sets the full local rect size of the current parent RectTransform.
+            /// </summary>
+            public Vector2 LocalRectSize { get; set; }
+
+            /// <summary>
+            /// Gets or sets the PSD content display rect within the parent local space.
+            /// </summary>
+            public Rect LocalDisplayRect { get; set; }
         }
 
         /// <summary>
@@ -178,6 +227,16 @@
             /// Gets or sets the parsed animation frame rate.
             /// </summary>
             public float AnimationFps { get; set; }
+
+            /// <summary>
+            /// Gets or sets the parsed anchor preset from the source layer name.
+            /// </summary>
+            public AnchorNamePreset AnchorPreset { get; set; }
+
+            /// <summary>
+            /// Gets or sets the explicitly parsed anchor preset from the source layer name before inheritance.
+            /// </summary>
+            public AnchorNamePreset ExplicitAnchorPreset { get; set; }
         }
 
         /// <summary>
@@ -192,6 +251,8 @@
             PrefabMode = PrefabOutputMode.SiblingToOutputFolder;
             ScaleToTargetCanvas = true;
             PreserveAspectWhenScalingToCanvas = true;
+            EnableAutoAnchorByName = true;
+            RootUseGlobalAnchorByDefault = true;
         }
 
         /// <summary>
@@ -224,6 +285,16 @@
         /// Gets or sets a value indicating whether scaling to target canvas should preserve PSD aspect ratio.
         /// </summary>
         public static bool PreserveAspectWhenScalingToCanvas { get; set; }
+
+        /// <summary>
+        /// Gets or sets a value indicating whether UI anchors should be inferred from layer names.
+        /// </summary>
+        public static bool EnableAutoAnchorByName { get; set; }
+
+        /// <summary>
+        /// Gets or sets a value indicating whether the generated UI root should default to a global stretch anchor.
+        /// </summary>
+        public static bool RootUseGlobalAnchorByDefault { get; set; }
 
         /// <summary>
         /// Gets or sets the generated files output mode.
@@ -417,7 +488,9 @@
                 }
 
                 rootPsdGameObject = null;
+                importRootGameObject = null;
                 currentGroupGameObject = null;
+                currentGroupLayoutContext = default(UiLayoutContext);
 
                 if ((LayoutInScene || CreatePrefab) && hasVisibleRuntimeObjects)
                 {
@@ -432,21 +505,23 @@
                             rootPsdGameObject = new GameObject(PsdName, typeof(RectTransform));
                             RectTransform rootRect = rootPsdGameObject.GetComponent<RectTransform>();
                             rootRect.SetParent(targetCanvas.transform, false);
-                            rootRect.anchorMin = new Vector2(0.5f, 0.5f);
-                            rootRect.anchorMax = new Vector2(0.5f, 0.5f);
-                            rootRect.pivot = new Vector2(0.5f, 0.5f);
-                            rootRect.anchoredPosition = Vector2.zero;
-                            rootRect.sizeDelta = GetScaledRootSize();
+                            currentGroupLayoutContext = ApplyRootUILayout(rootRect);
+                            importRootGameObject = rootPsdGameObject;
                         }
                         else
                         {
                             CreateUICanvas();
-                            rootPsdGameObject = Canvas;
+                            rootPsdGameObject = new GameObject(PsdName, typeof(RectTransform));
+                            RectTransform rootRect = rootPsdGameObject.GetComponent<RectTransform>();
+                            rootRect.SetParent(Canvas.transform, false);
+                            currentGroupLayoutContext = ApplyRootUILayout(rootRect);
+                            importRootGameObject = Canvas;
                         }
                     }
                     else
                     {
                         rootPsdGameObject = new GameObject(PsdName);
+                        importRootGameObject = rootPsdGameObject;
                     }
 
                     currentGroupGameObject = rootPsdGameObject;
@@ -454,17 +529,17 @@
 
                 ExportTree(tree);
 
-                if (CreatePrefab && rootPsdGameObject != null)
+                if (CreatePrefab && importRootGameObject != null)
                 {
                     if (ShouldSavePrefab(prefabRelativePath))
                     {
-                        PrefabUtility.SaveAsPrefabAsset(rootPsdGameObject, prefabRelativePath);
+                        PrefabUtility.SaveAsPrefabAsset(importRootGameObject, prefabRelativePath);
                     }
 
-                    if (!LayoutInScene && rootPsdGameObject != null)
+                    if (!LayoutInScene && importRootGameObject != null)
                     {
                         // if we are not flagged to layout in the scene, delete the GameObject used to generate the prefab
-                        UnityEngine.Object.DestroyImmediate(rootPsdGameObject);
+                        UnityEngine.Object.DestroyImmediate(importRootGameObject);
                     }
                 }
 
@@ -1006,6 +1081,8 @@
             info.IsButtonGroup = info.IsFolderLike && layer.Name.ContainsIgnoreCase("|Button");
             info.IsAnimationGroup = info.IsFolderLike && layer.Name.ContainsIgnoreCase("|Animation");
             info.ButtonRole = parent != null && parent.IsButtonGroup ? GetButtonChildRole(layer) : ButtonChildRole.None;
+            info.ExplicitAnchorPreset = ParseAnchorPreset(GetAnchorParsingName(info));
+            info.AnchorPreset = ResolveAnchorPreset(info);
 
             infoMap[layer] = info;
 
@@ -1244,6 +1321,151 @@
             }
 
             return fps;
+        }
+
+        /// <summary>
+        /// Resolves the parsed anchor preset for one layer.
+        /// </summary>
+        /// <param name="info">Layer metadata.</param>
+        /// <returns>Parsed preset or <see cref="AnchorNamePreset.None"/> when no prefix applies.</returns>
+        private static AnchorNamePreset ResolveAnchorPreset(LayerImportInfo info)
+        {
+            if (!EnableAutoAnchorByName || info == null)
+            {
+                return AnchorNamePreset.None;
+            }
+
+            if (info.ExplicitAnchorPreset != AnchorNamePreset.None)
+            {
+                return info.ExplicitAnchorPreset;
+            }
+
+            if (info.Parent != null &&
+                info.Parent.IsFolderLike &&
+                info.Parent.AnchorPreset != AnchorNamePreset.None)
+            {
+                return info.Parent.AnchorPreset;
+            }
+
+            return AnchorNamePreset.None;
+        }
+
+        /// <summary>
+        /// Gets the source name used for anchor-prefix parsing.
+        /// </summary>
+        /// <param name="info">Layer metadata.</param>
+        /// <returns>Name without tool tags.</returns>
+        private static string GetAnchorParsingName(LayerImportInfo info)
+        {
+            if (info == null || info.Layer == null || string.IsNullOrEmpty(info.Layer.Name))
+            {
+                return string.Empty;
+            }
+
+            string name = info.Layer.Name;
+            if (info.IsAnimationGroup)
+            {
+                return GetAnimationLayerBaseName(name);
+            }
+
+            if (info.IsButtonGroup)
+            {
+                return RemoveTagIgnoreCase(name, "|Button");
+            }
+
+            if (info.Parent != null && info.Parent.IsButtonGroup)
+            {
+                return GetButtonChildBaseName(info.Layer);
+            }
+
+            int pipeIndex = name.IndexOf('|');
+            return pipeIndex >= 0 ? name.Substring(0, pipeIndex) : name;
+        }
+
+        /// <summary>
+        /// Parses a layer-name prefix into an anchor preset.
+        /// </summary>
+        /// <param name="name">Layer or folder name without tool tags.</param>
+        /// <returns>Resolved anchor preset.</returns>
+        private static AnchorNamePreset ParseAnchorPreset(string name)
+        {
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                return AnchorNamePreset.None;
+            }
+
+            string trimmedName = name.TrimStart();
+            if (trimmedName.StartsWith("全局", StringComparison.OrdinalIgnoreCase))
+            {
+                return AnchorNamePreset.Global;
+            }
+
+            if (trimmedName.StartsWith("左上", StringComparison.OrdinalIgnoreCase))
+            {
+                return AnchorNamePreset.TopLeft;
+            }
+
+            if (trimmedName.StartsWith("左下", StringComparison.OrdinalIgnoreCase))
+            {
+                return AnchorNamePreset.BottomLeft;
+            }
+
+            if (trimmedName.StartsWith("右上", StringComparison.OrdinalIgnoreCase))
+            {
+                return AnchorNamePreset.TopRight;
+            }
+
+            if (trimmedName.StartsWith("右下", StringComparison.OrdinalIgnoreCase))
+            {
+                return AnchorNamePreset.BottomRight;
+            }
+
+            if (trimmedName.StartsWith("中间", StringComparison.OrdinalIgnoreCase))
+            {
+                return AnchorNamePreset.Center;
+            }
+
+            if (trimmedName.StartsWith("左中", StringComparison.OrdinalIgnoreCase))
+            {
+                return AnchorNamePreset.LeftMiddle;
+            }
+
+            if (trimmedName.StartsWith("右中", StringComparison.OrdinalIgnoreCase))
+            {
+                return AnchorNamePreset.RightMiddle;
+            }
+
+            if (trimmedName.StartsWith("上中", StringComparison.OrdinalIgnoreCase))
+            {
+                return AnchorNamePreset.TopMiddle;
+            }
+
+            if (trimmedName.StartsWith("下中", StringComparison.OrdinalIgnoreCase))
+            {
+                return AnchorNamePreset.BottomMiddle;
+            }
+
+            if (trimmedName.StartsWith("上", StringComparison.OrdinalIgnoreCase))
+            {
+                return AnchorNamePreset.TopMiddle;
+            }
+
+            if (trimmedName.StartsWith("下", StringComparison.OrdinalIgnoreCase))
+            {
+                return AnchorNamePreset.BottomMiddle;
+            }
+
+            if (trimmedName.StartsWith("左", StringComparison.OrdinalIgnoreCase))
+            {
+                return AnchorNamePreset.LeftMiddle;
+            }
+
+            if (trimmedName.StartsWith("右", StringComparison.OrdinalIgnoreCase))
+            {
+                return AnchorNamePreset.RightMiddle;
+            }
+
+            return AnchorNamePreset.None;
         }
 
         /// <summary>
@@ -2378,6 +2600,7 @@
             // it is a "normal" folder layer that contains children layers
             string oldDirectory = currentPath;
             GameObject oldGroup = currentGroupGameObject;
+            UiLayoutContext oldLayoutContext = currentGroupLayoutContext;
 
             currentPath = Path.Combine(currentPath, GetOutputFolderName(layer));
             Directory.CreateDirectory(currentPath);
@@ -2389,7 +2612,7 @@
 
             if (createGroupObject)
             {
-                if (UseUnityUI && UseTargetCanvasCoordinates)
+                if (UseUnityUI)
                 {
                     currentGroupGameObject = new GameObject(GetRuntimeObjectName(layer), typeof(RectTransform));
                     RectTransform groupTransform = currentGroupGameObject.GetComponent<RectTransform>();
@@ -2398,10 +2621,7 @@
                         groupTransform.SetParent(oldGroup.transform, false);
                     }
 
-                    groupTransform.anchorMin = new Vector2(0.5f, 0.5f);
-                    groupTransform.anchorMax = new Vector2(0.5f, 0.5f);
-                    groupTransform.pivot = new Vector2(0.5f, 0.5f);
-                    groupTransform.anchoredPosition = Vector2.zero;
+                    currentGroupLayoutContext = ApplyLayerUILayout(groupTransform, layer, info.AnchorPreset);
                 }
                 else
                 {
@@ -2417,6 +2637,7 @@
 
             currentPath = oldDirectory;
             currentGroupGameObject = oldGroup;
+            currentGroupLayoutContext = oldLayoutContext;
         }
 
         /// <summary>
@@ -2984,56 +3205,19 @@
         /// <returns>The newly constructed Image object.</returns>
         private static Image CreateUIImage(Layer layer)
         {
-            if (UseTargetCanvasCoordinates)
-            {
-                Vector2 scaledSize = GetScaledLayerSize(layer.Rect);
-                float uiWidthPixels = scaledSize.x;
-                float uiHeightPixels = scaledSize.y;
+            LayerImportInfo info = GetLayerInfo(layer);
+            AnchorNamePreset preset = info != null ? info.AnchorPreset : AnchorNamePreset.None;
 
-                GameObject uiObject = new GameObject(GetRuntimeObjectName(layer), typeof(RectTransform));
-                uiObject.transform.SetParent(currentGroupGameObject.transform, false);
+            GameObject uiObject = new GameObject(GetRuntimeObjectName(layer), typeof(RectTransform));
+            uiObject.transform.SetParent(currentGroupGameObject.transform, false);
 
-                RectTransform uiTransform = uiObject.GetComponent<RectTransform>();
-                uiTransform.anchorMin = new Vector2(0.5f, 0.5f);
-                uiTransform.anchorMax = new Vector2(0.5f, 0.5f);
-                uiTransform.pivot = new Vector2(0.5f, 0.5f);
-                uiTransform.anchoredPosition = GetLocalAnchoredPosition(layer.Rect, currentGroupGameObject);
-                uiTransform.sizeDelta = new Vector2(uiWidthPixels, uiHeightPixels);
+            RectTransform uiTransform = uiObject.GetComponent<RectTransform>();
+            ApplyLayerUILayout(uiTransform, layer, preset);
 
-                Image uiImage = uiObject.AddComponent<Image>();
-                uiImage.sprite = CreateSprite(layer);
-                return uiImage;
-            }
-
-            float x = layer.Rect.x / PixelsToUnits;
-            float y = layer.Rect.y / PixelsToUnits;
-
-            // Photoshop increase Y while going down. Unity increases Y while going up.  So, we need to reverse the Y position.
-            y = (CanvasSize.y / PixelsToUnits) - y;
-
-            // Photoshop uses the upper left corner as the pivot (0,0).  Unity defaults to use the center as (0,0), so we must offset the positions.
-            x = x - ((CanvasSize.x / 2) / PixelsToUnits);
-            y = y - ((CanvasSize.y / 2) / PixelsToUnits);
-
-            float width = layer.Rect.width / PixelsToUnits;
-            float height = layer.Rect.height / PixelsToUnits;
-
-            GameObject gameObject = new GameObject(GetRuntimeObjectName(layer));
-            gameObject.transform.position = new Vector3(x + (width / 2), y - (height / 2), currentDepth);
-            gameObject.transform.parent = currentGroupGameObject.transform;
-
-            // if the current group object actually has a position (not a normal Photoshop folder layer), then offset the position accordingly
-            gameObject.transform.position = new Vector3(gameObject.transform.position.x + currentGroupGameObject.transform.position.x, gameObject.transform.position.y + currentGroupGameObject.transform.position.y, gameObject.transform.position.z);
-
-            currentDepth -= depthStep;
-
-            Image image = gameObject.AddComponent<Image>();
-            image.sprite = CreateSprite(layer);
-
-            RectTransform transform = gameObject.GetComponent<RectTransform>();
-            transform.sizeDelta = new Vector2(width, height);
-
-            return image;
+            Image uiImage = uiObject.AddComponent<Image>();
+            uiImage.sprite = CreateSprite(layer);
+            ApplyImageLayoutBehavior(uiImage, preset);
+            return uiImage;
         }
 
         /// <summary>
@@ -3042,104 +3226,38 @@
         /// <param name="layer">The <see cref="Layer"/> used to create the <see cref="UnityEngine.UI.Text"/> from.</param>
         private static void CreateUIText(Layer layer)
         {
-            if (UseTargetCanvasCoordinates)
-            {
-                Color uiColor = layer.FillColor;
-                uiColor = ApplyLayerOpacity(uiColor, layer);
-                Vector2 scaledSize = GetScaledLayerSize(layer.Rect);
-                float uiWidthPixels = scaledSize.x;
-                float uiHeightPixels = scaledSize.y;
-
-                GameObject uiObject = new GameObject(GetRuntimeObjectName(layer), typeof(RectTransform));
-                uiObject.transform.SetParent(currentGroupGameObject.transform, false);
-
-                RectTransform uiTransform = uiObject.GetComponent<RectTransform>();
-                uiTransform.anchorMin = new Vector2(0.5f, 0.5f);
-                uiTransform.anchorMax = new Vector2(0.5f, 0.5f);
-                uiTransform.pivot = new Vector2(0.5f, 0.5f);
-                uiTransform.anchoredPosition = GetLocalAnchoredPosition(layer.Rect, currentGroupGameObject);
-                uiTransform.sizeDelta = new Vector2(uiWidthPixels, uiHeightPixels);
-
-                Font uiFont = GetFontForLayer(layer);
-                Text uiText = uiObject.AddComponent<Text>();
-                uiText.text = layer.Text;
-                uiText.font = uiFont;
-                uiText.rectTransform.sizeDelta = new Vector2(uiWidthPixels, uiHeightPixels);
-
-                float uiFontSize = layer.FontSize * GetTargetCanvasUniformScale();
-                float uiCeiling = Mathf.Ceil(uiFontSize);
-                if (uiFontSize < uiCeiling)
-                {
-                    float scaleFactor = uiCeiling / uiFontSize;
-                    uiText.fontSize = (int)uiCeiling;
-                    uiText.rectTransform.sizeDelta *= scaleFactor;
-                    uiText.rectTransform.localScale /= scaleFactor;
-                }
-                else
-                {
-                    uiText.fontSize = (int)uiFontSize;
-                }
-
-                uiText.color = uiColor;
-                uiText.alignment = TextAnchor.MiddleCenter;
-
-                switch (layer.Justification)
-                {
-                    case TextJustification.Left:
-                        uiText.alignment = TextAnchor.MiddleLeft;
-                        break;
-                    case TextJustification.Right:
-                        uiText.alignment = TextAnchor.MiddleRight;
-                        break;
-                    case TextJustification.Center:
-                        uiText.alignment = TextAnchor.MiddleCenter;
-                        break;
-                }
-
-                return;
-            }
+            LayerImportInfo info = GetLayerInfo(layer);
+            AnchorNamePreset preset = info != null ? info.AnchorPreset : AnchorNamePreset.None;
 
             Color color = ApplyLayerOpacity(layer.FillColor, layer);
 
-            float x = layer.Rect.x / PixelsToUnits;
-            float y = layer.Rect.y / PixelsToUnits;
+            GameObject uiObject = new GameObject(GetRuntimeObjectName(layer), typeof(RectTransform));
+            uiObject.transform.SetParent(currentGroupGameObject.transform, false);
 
-            // Photoshop increase Y while going down. Unity increases Y while going up.  So, we need to reverse the Y position.
-            y = (CanvasSize.y / PixelsToUnits) - y;
-
-            // Photoshop uses the upper left corner as the pivot (0,0).  Unity defaults to use the center as (0,0), so we must offset the positions.
-            x = x - ((CanvasSize.x / 2) / PixelsToUnits);
-            y = y - ((CanvasSize.y / 2) / PixelsToUnits);
-
-            float width = layer.Rect.width / PixelsToUnits;
-            float height = layer.Rect.height / PixelsToUnits;
-
-            GameObject gameObject = new GameObject(GetRuntimeObjectName(layer));
-            gameObject.transform.position = new Vector3(x + (width / 2), y - (height / 2), currentDepth);
-            gameObject.transform.parent = currentGroupGameObject.transform;
-
-            currentDepth -= depthStep;
+            RectTransform uiTransform = uiObject.GetComponent<RectTransform>();
+            ApplyLayerUILayout(uiTransform, layer, preset);
 
             Font font = GetFontForLayer(layer);
 
-            Text textUI = gameObject.AddComponent<Text>();
+            Text textUI = uiObject.AddComponent<Text>();
             textUI.text = layer.Text;
             textUI.font = font;
-            textUI.rectTransform.sizeDelta = new Vector2(width, height);
 
-            float fontSize = layer.FontSize / PixelsToUnits;
+            float fontSize = GetUIFontSize(layer);
             float ceiling = Mathf.Ceil(fontSize);
-            if (fontSize < ceiling)
+            if (fontSize > 0f && fontSize < ceiling)
             {
-                // Unity UI Text doesn't support floating point font sizes, so we have to round to the next size and scale everything else
-                float scaleFactor = ceiling / fontSize;
                 textUI.fontSize = (int)ceiling;
-                textUI.rectTransform.sizeDelta *= scaleFactor;
-                textUI.rectTransform.localScale /= scaleFactor;
+                if (!IsGlobalAnchorPreset(preset))
+                {
+                    float scaleFactor = ceiling / fontSize;
+                    textUI.rectTransform.sizeDelta *= scaleFactor;
+                    textUI.rectTransform.localScale /= scaleFactor;
+                }
             }
             else
             {
-                textUI.fontSize = (int)fontSize;
+                textUI.fontSize = Mathf.Max(1, (int)ceiling);
             }
 
             textUI.color = color;
@@ -3165,9 +3283,13 @@
         /// <param name="layer">The Layer to create the Button from.</param>
         private static void CreateUIButton(Layer layer)
         {
+            LayerImportInfo info = GetLayerInfo(layer);
+            AnchorNamePreset buttonPreset = info != null ? info.AnchorPreset : AnchorNamePreset.None;
+
             // create an empty Image object with a Button behavior attached
             Image image = CreateUIImage(layer);
             Button button = image.gameObject.AddComponent<Button>();
+            UiLayoutContext buttonLayoutContext = GetChildUILayoutContext(layer, buttonPreset);
 
             // look through the children for a clip rect
             ////Rectangle? clipRect = null;
@@ -3214,51 +3336,22 @@
                 }
                 else if (childInfo.ButtonRole == ButtonChildRole.Default)
                 {
-
                     image.sprite = CreateSprite(child);
-
-                    RectTransform transform = image.gameObject.GetComponent<RectTransform>();
-                    if (UseTargetCanvasCoordinates)
-                    {
-                        Vector2 scaledSize = GetScaledLayerSize(child.Rect);
-                        transform.anchorMin = new Vector2(0.5f, 0.5f);
-                        transform.anchorMax = new Vector2(0.5f, 0.5f);
-                        transform.pivot = new Vector2(0.5f, 0.5f);
-                        transform.anchoredPosition = GetLocalAnchoredPosition(
-                            child.Rect,
-                            button.gameObject.transform.parent != null ? button.gameObject.transform.parent.gameObject : null);
-                        transform.sizeDelta = scaledSize;
-                    }
-                    else
-                    {
-                        float x = child.Rect.x / PixelsToUnits;
-                        float y = child.Rect.y / PixelsToUnits;
-
-                        // Photoshop increase Y while going down. Unity increases Y while going up.  So, we need to reverse the Y position.
-                        y = (CanvasSize.y / PixelsToUnits) - y;
-
-                        // Photoshop uses the upper left corner as the pivot (0,0).  Unity defaults to use the center as (0,0), so we must offset the positions.
-                        x = x - ((CanvasSize.x / 2) / PixelsToUnits);
-                        y = y - ((CanvasSize.y / 2) / PixelsToUnits);
-
-                        float width = child.Rect.width / PixelsToUnits;
-                        float height = child.Rect.height / PixelsToUnits;
-
-                        image.gameObject.transform.position = new Vector3(x + (width / 2), y - (height / 2), currentDepth);
-                        transform.sizeDelta = new Vector2(width, height);
-                    }
-
+                    ApplyImageLayoutBehavior(image, buttonPreset);
                     button.targetGraphic = image;
                 }
                 else if (childInfo.ButtonRole == ButtonChildRole.TextImage)
                 {
                     GameObject oldGroupObject = currentGroupGameObject;
+                    UiLayoutContext oldLayoutContext = currentGroupLayoutContext;
                     currentGroupGameObject = button.gameObject;
+                    currentGroupLayoutContext = buttonLayoutContext;
 
                     // If the "text" is a normal art layer, create an Image object from the "text"
                     CreateUIImage(child);
 
                     currentGroupGameObject = oldGroupObject;
+                    currentGroupLayoutContext = oldLayoutContext;
                 }
 
                 if (child.IsTextLayer)
@@ -3269,27 +3362,145 @@
         }
 
         /// <summary>
-        /// Converts a PSD layer rectangle to an anchored position relative to canvas center.
+        /// Applies the configured layout to the generated PSD root object.
         /// </summary>
-        /// <param name="rect">The PSD layer rectangle.</param>
-        /// <returns>Anchored position in UI pixels.</returns>
-        private static Vector2 GetAnchoredPositionFromLayerRect(Rect rect)
+        /// <param name="rootTransform">The root RectTransform.</param>
+        /// <returns>Resolved root layout context.</returns>
+        private static UiLayoutContext ApplyRootUILayout(RectTransform rootTransform)
         {
-            float scaleX = GetTargetCanvasScaleX();
-            float scaleY = GetTargetCanvasScaleY();
-            float x = (rect.x + (rect.width * 0.5f) - (CanvasSize.x * 0.5f)) * scaleX;
-            float y = ((CanvasSize.y * 0.5f) - (rect.y + (rect.height * 0.5f))) * scaleY;
-            return new Vector2(x, y);
+            Vector2 rootRectSize = GetRootRectSize();
+            if (RootUseGlobalAnchorByDefault)
+            {
+                ApplyStretchLayout(rootTransform);
+            }
+            else
+            {
+                rootTransform.anchorMin = new Vector2(0.5f, 0.5f);
+                rootTransform.anchorMax = new Vector2(0.5f, 0.5f);
+                rootTransform.pivot = new Vector2(0.5f, 0.5f);
+                rootTransform.anchoredPosition = Vector2.zero;
+                rootTransform.sizeDelta = rootRectSize;
+            }
+
+            return new UiLayoutContext
+            {
+                PsdReferenceRect = new Rect(0f, 0f, CanvasSize.x, CanvasSize.y),
+                LocalRectSize = rootRectSize,
+                LocalDisplayRect = GetCenteredRect(GetRootDisplaySize(rootRectSize))
+            };
         }
 
         /// <summary>
-        /// Gets scaled layer size for target canvas mapping.
+        /// Applies the configured layout to one generated UI node.
+        /// </summary>
+        /// <param name="transform">The RectTransform to place.</param>
+        /// <param name="layer">Source PSD layer.</param>
+        /// <param name="preset">Resolved anchor preset.</param>
+        /// <returns>Resolved child layout context.</returns>
+        private static UiLayoutContext ApplyLayerUILayout(RectTransform transform, Layer layer, AnchorNamePreset preset)
+        {
+            AnchorNamePreset effectivePreset = NormalizePointAnchorPreset(preset);
+            UiLayoutContext childContext = GetChildUILayoutContext(layer, preset);
+
+            if (IsGlobalAnchorPreset(preset))
+            {
+                ApplyStretchLayout(transform);
+                return childContext;
+            }
+
+            Vector2 anchor = GetAnchorVector(effectivePreset);
+            transform.anchorMin = anchor;
+            transform.anchorMax = anchor;
+            transform.pivot = anchor;
+            transform.anchoredPosition = GetAnchoredPositionForLayer(layer.Rect, currentGroupLayoutContext, effectivePreset);
+            transform.sizeDelta = childContext.LocalRectSize;
+            return childContext;
+        }
+
+        /// <summary>
+        /// Applies stretch anchors with zero offsets to a RectTransform.
+        /// </summary>
+        /// <param name="transform">Target RectTransform.</param>
+        private static void ApplyStretchLayout(RectTransform transform)
+        {
+            transform.anchorMin = Vector2.zero;
+            transform.anchorMax = Vector2.one;
+            transform.pivot = new Vector2(0.5f, 0.5f);
+            transform.anchoredPosition = Vector2.zero;
+            transform.sizeDelta = Vector2.zero;
+            transform.offsetMin = Vector2.zero;
+            transform.offsetMax = Vector2.zero;
+        }
+
+        /// <summary>
+        /// Gets the child UI layout context produced by one layer.
+        /// </summary>
+        /// <param name="layer">Source PSD layer.</param>
+        /// <param name="preset">Resolved anchor preset.</param>
+        /// <returns>Layout context for the layer's children.</returns>
+        private static UiLayoutContext GetChildUILayoutContext(Layer layer, AnchorNamePreset preset)
+        {
+            if (IsGlobalAnchorPreset(preset))
+            {
+                return currentGroupLayoutContext;
+            }
+
+            Vector2 childSize = GetUiLayerSize(layer.Rect);
+            return new UiLayoutContext
+            {
+                PsdReferenceRect = layer.Rect,
+                LocalRectSize = childSize,
+                LocalDisplayRect = GetCenteredRect(childSize)
+            };
+        }
+
+        /// <summary>
+        /// Applies the default image preserve-aspect behavior for generated UI images.
+        /// </summary>
+        /// <param name="image">The generated image.</param>
+        /// <param name="preset">Resolved anchor preset.</param>
+        private static void ApplyImageLayoutBehavior(Image image, AnchorNamePreset preset)
+        {
+            if (image == null)
+            {
+                return;
+            }
+
+            image.preserveAspect = true;
+
+            AspectRatioFitter fitter = image.GetComponent<AspectRatioFitter>();
+            if (!IsGlobalAnchorPreset(preset) || image.sprite == null || image.sprite.rect.height <= 0f)
+            {
+                if (fitter != null)
+                {
+                    UnityEngine.Object.DestroyImmediate(fitter);
+                }
+
+                return;
+            }
+
+            if (fitter == null)
+            {
+                fitter = image.gameObject.AddComponent<AspectRatioFitter>();
+            }
+
+            fitter.aspectMode = AspectRatioFitter.AspectMode.EnvelopeParent;
+            fitter.aspectRatio = image.sprite.rect.width / image.sprite.rect.height;
+        }
+
+        /// <summary>
+        /// Gets scaled layer size for UI layout.
         /// </summary>
         /// <param name="rect">The PSD layer rectangle.</param>
         /// <returns>Scaled width and height.</returns>
-        private static Vector2 GetScaledLayerSize(Rect rect)
+        private static Vector2 GetUiLayerSize(Rect rect)
         {
-            return new Vector2(rect.width * GetTargetCanvasScaleX(), rect.height * GetTargetCanvasScaleY());
+            if (UseTargetCanvasCoordinates)
+            {
+                return new Vector2(rect.width * GetTargetCanvasScaleX(), rect.height * GetTargetCanvasScaleY());
+            }
+
+            return new Vector2(rect.width / PixelsToUnits, rect.height / PixelsToUnits);
         }
 
         /// <summary>
@@ -3371,6 +3582,50 @@
         }
 
         /// <summary>
+        /// Gets the actual root RectTransform size.
+        /// </summary>
+        /// <returns>Root RectTransform size.</returns>
+        private static Vector2 GetRootRectSize()
+        {
+            if (UseTargetCanvasCoordinates)
+            {
+                return RootUseGlobalAnchorByDefault ? TargetCanvasSize : GetScaledRootSize();
+            }
+
+            return new Vector2(CanvasSize.x / PixelsToUnits, CanvasSize.y / PixelsToUnits);
+        }
+
+        /// <summary>
+        /// Gets the PSD content display size inside the current root RectTransform.
+        /// </summary>
+        /// <param name="rootRectSize">The actual root RectTransform size.</param>
+        /// <returns>PSD content display size.</returns>
+        private static Vector2 GetRootDisplaySize(Vector2 rootRectSize)
+        {
+            if (!UseTargetCanvasCoordinates)
+            {
+                return rootRectSize;
+            }
+
+            return GetScaledRootSize();
+        }
+
+        /// <summary>
+        /// Gets the UI font size used by generated Unity UI text.
+        /// </summary>
+        /// <param name="layer">Source PSD text layer.</param>
+        /// <returns>Scaled UI font size.</returns>
+        private static float GetUIFontSize(Layer layer)
+        {
+            if (UseTargetCanvasCoordinates)
+            {
+                return layer.FontSize * GetTargetCanvasUniformScale();
+            }
+
+            return layer.FontSize / PixelsToUnits;
+        }
+
+        /// <summary>
         /// Applies Photoshop layer opacity to a Unity color.
         /// </summary>
         /// <param name="color">Base color.</param>
@@ -3384,45 +3639,166 @@
         }
 
         /// <summary>
-        /// Converts a PSD layer rect to a local anchored position relative to the specified parent.
+        /// Converts a PSD layer rect to a local anchored position relative to the current parent layout context.
         /// </summary>
         /// <param name="rect">The PSD layer rectangle.</param>
-        /// <param name="parentObject">The intended parent object.</param>
-        /// <returns>Local anchored position for the created UI element.</returns>
-        private static Vector2 GetLocalAnchoredPosition(Rect rect, GameObject parentObject)
+        /// <param name="parentContext">The current parent layout context.</param>
+        /// <param name="preset">The anchor preset used by the child.</param>
+        /// <returns>Local anchored position for the generated UI element.</returns>
+        private static Vector2 GetAnchoredPositionForLayer(Rect rect, UiLayoutContext parentContext, AnchorNamePreset preset)
         {
-            Vector2 absolute = GetAnchoredPositionFromLayerRect(rect);
-            Vector2 parentAbsolute = GetAbsoluteAnchoredPosition(parentObject);
-            return absolute - parentAbsolute;
+            Vector2 localPoint = MapPsdPointToLocalSpace(GetPsdPresetPoint(rect, preset), parentContext);
+            Vector2 anchorPoint = GetLocalPresetPoint(parentContext.LocalRectSize, preset);
+            return localPoint - anchorPoint;
         }
 
         /// <summary>
-        /// Gets cumulative anchored position from the current transform up to the root.
+        /// Maps a PSD point into the local coordinate space of the current parent RectTransform.
         /// </summary>
-        /// <param name="currentObject">The object to accumulate from.</param>
-        /// <returns>Cumulative anchored position.</returns>
-        private static Vector2 GetAbsoluteAnchoredPosition(GameObject currentObject)
+        /// <param name="psdPoint">PSD-space point.</param>
+        /// <param name="context">Current UI layout context.</param>
+        /// <returns>Local point in parent center-space coordinates.</returns>
+        private static Vector2 MapPsdPointToLocalSpace(Vector2 psdPoint, UiLayoutContext context)
         {
-            if (currentObject == null)
+            if (context.PsdReferenceRect.width <= 0f || context.PsdReferenceRect.height <= 0f)
             {
                 return Vector2.zero;
             }
 
-            Vector2 offset = Vector2.zero;
-            Transform current = currentObject.transform;
-            Transform stopAt = rootPsdGameObject != null ? rootPsdGameObject.transform.parent : null;
-            while (current != null && current != stopAt)
+            float normalizedX = (psdPoint.x - context.PsdReferenceRect.xMin) / context.PsdReferenceRect.width;
+            float normalizedY = (psdPoint.y - context.PsdReferenceRect.yMin) / context.PsdReferenceRect.height;
+
+            float x = context.LocalDisplayRect.xMin + (normalizedX * context.LocalDisplayRect.width);
+            float y = context.LocalDisplayRect.yMax - (normalizedY * context.LocalDisplayRect.height);
+            return new Vector2(x, y);
+        }
+
+        /// <summary>
+        /// Gets the PSD-space point for one anchor preset.
+        /// </summary>
+        /// <param name="rect">PSD-space rect.</param>
+        /// <param name="preset">Anchor preset.</param>
+        /// <returns>PSD-space anchor point.</returns>
+        private static Vector2 GetPsdPresetPoint(Rect rect, AnchorNamePreset preset)
+        {
+            switch (NormalizePointAnchorPreset(preset))
             {
-                RectTransform rectTransform = current as RectTransform;
-                if (rectTransform != null)
-                {
-                    offset += rectTransform.anchoredPosition;
-                }
-
-                current = current.parent;
+                case AnchorNamePreset.TopLeft:
+                    return new Vector2(rect.xMin, rect.yMin);
+                case AnchorNamePreset.BottomLeft:
+                    return new Vector2(rect.xMin, rect.yMax);
+                case AnchorNamePreset.TopRight:
+                    return new Vector2(rect.xMax, rect.yMin);
+                case AnchorNamePreset.BottomRight:
+                    return new Vector2(rect.xMax, rect.yMax);
+                case AnchorNamePreset.LeftMiddle:
+                    return new Vector2(rect.xMin, rect.yMin + (rect.height * 0.5f));
+                case AnchorNamePreset.RightMiddle:
+                    return new Vector2(rect.xMax, rect.yMin + (rect.height * 0.5f));
+                case AnchorNamePreset.TopMiddle:
+                    return new Vector2(rect.xMin + (rect.width * 0.5f), rect.yMin);
+                case AnchorNamePreset.BottomMiddle:
+                    return new Vector2(rect.xMin + (rect.width * 0.5f), rect.yMax);
+                case AnchorNamePreset.Center:
+                default:
+                    return rect.center;
             }
+        }
 
-            return offset;
+        /// <summary>
+        /// Gets the local-space anchor point for one anchor preset in a parent rect.
+        /// </summary>
+        /// <param name="size">Parent local rect size.</param>
+        /// <param name="preset">Anchor preset.</param>
+        /// <returns>Local-space anchor point.</returns>
+        private static Vector2 GetLocalPresetPoint(Vector2 size, AnchorNamePreset preset)
+        {
+            Rect localRect = GetCenteredRect(size);
+            switch (NormalizePointAnchorPreset(preset))
+            {
+                case AnchorNamePreset.TopLeft:
+                    return new Vector2(localRect.xMin, localRect.yMax);
+                case AnchorNamePreset.BottomLeft:
+                    return new Vector2(localRect.xMin, localRect.yMin);
+                case AnchorNamePreset.TopRight:
+                    return new Vector2(localRect.xMax, localRect.yMax);
+                case AnchorNamePreset.BottomRight:
+                    return new Vector2(localRect.xMax, localRect.yMin);
+                case AnchorNamePreset.LeftMiddle:
+                    return new Vector2(localRect.xMin, 0f);
+                case AnchorNamePreset.RightMiddle:
+                    return new Vector2(localRect.xMax, 0f);
+                case AnchorNamePreset.TopMiddle:
+                    return new Vector2(0f, localRect.yMax);
+                case AnchorNamePreset.BottomMiddle:
+                    return new Vector2(0f, localRect.yMin);
+                case AnchorNamePreset.Center:
+                default:
+                    return Vector2.zero;
+            }
+        }
+
+        /// <summary>
+        /// Gets the anchor vector used by RectTransform for a preset.
+        /// </summary>
+        /// <param name="preset">Anchor preset.</param>
+        /// <returns>Unity anchor vector.</returns>
+        private static Vector2 GetAnchorVector(AnchorNamePreset preset)
+        {
+            switch (NormalizePointAnchorPreset(preset))
+            {
+                case AnchorNamePreset.TopLeft:
+                    return new Vector2(0f, 1f);
+                case AnchorNamePreset.BottomLeft:
+                    return new Vector2(0f, 0f);
+                case AnchorNamePreset.TopRight:
+                    return new Vector2(1f, 1f);
+                case AnchorNamePreset.BottomRight:
+                    return new Vector2(1f, 0f);
+                case AnchorNamePreset.LeftMiddle:
+                    return new Vector2(0f, 0.5f);
+                case AnchorNamePreset.RightMiddle:
+                    return new Vector2(1f, 0.5f);
+                case AnchorNamePreset.TopMiddle:
+                    return new Vector2(0.5f, 1f);
+                case AnchorNamePreset.BottomMiddle:
+                    return new Vector2(0.5f, 0f);
+                case AnchorNamePreset.Center:
+                default:
+                    return new Vector2(0.5f, 0.5f);
+            }
+        }
+
+        /// <summary>
+        /// Normalizes a preset so regular point placement falls back to center.
+        /// </summary>
+        /// <param name="preset">Parsed preset.</param>
+        /// <returns>Point-placement preset.</returns>
+        private static AnchorNamePreset NormalizePointAnchorPreset(AnchorNamePreset preset)
+        {
+            return preset == AnchorNamePreset.None || preset == AnchorNamePreset.Global
+                ? AnchorNamePreset.Center
+                : preset;
+        }
+
+        /// <summary>
+        /// Determines whether a preset represents global stretch anchoring.
+        /// </summary>
+        /// <param name="preset">Parsed preset.</param>
+        /// <returns>True when the preset is global.</returns>
+        private static bool IsGlobalAnchorPreset(AnchorNamePreset preset)
+        {
+            return preset == AnchorNamePreset.Global;
+        }
+
+        /// <summary>
+        /// Creates a centered local rect for the given size.
+        /// </summary>
+        /// <param name="size">Rect size.</param>
+        /// <returns>Centered rect.</returns>
+        private static Rect GetCenteredRect(Vector2 size)
+        {
+            return new Rect(-size.x * 0.5f, -size.y * 0.5f, size.x, size.y);
         }
         #endregion
     }
