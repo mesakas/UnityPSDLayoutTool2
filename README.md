@@ -87,6 +87,13 @@ This project is explicitly based on the original `UnityPSDLayoutTool` and adds c
 - 图层蒙版 Alpha 会与图层 Alpha 正确相乘，不再出现透明度异常。
 - 文本层（UI Text / TextMesh）也会应用图层透明度。
 
+#### 隐藏层与重名处理
+
+- 在 Photoshop 中隐藏的图层，包括被父文件夹隐藏的子图层，现在默认只导出贴图资源，不会生成场景对象，也不会进入 Prefab 结构。
+- 隐藏的文本层也会按栅格化结果导出为贴图资源。
+- 同一父级下如果存在同名图层或同名文件夹，导入时会自动追加稳定后缀，例如 `_2`、`_3`。
+- 这个唯一命名规则会参与重复导入时的更新/删除匹配；只要父级结构和同名项相对顺序不变，旧资源路径就会稳定复用。
+
 ### Photoshop 兼容性（栅格化）
 
 Photoshop 的智能对象（Smart Objects）不在此插件的解析支持范围内。导入前建议先对相关图层进行栅格化。
@@ -223,6 +230,13 @@ Actions:
 - Mask alpha is correctly multiplied with layer alpha.
 - Text layers (UI Text / TextMesh) also apply layer opacity.
 
+### Hidden Layers And Duplicate Names
+
+- Layers hidden in Photoshop, including layers hidden by a parent folder, now export only texture assets by default. They do not create scene objects and are not included in generated prefabs.
+- Hidden text layers are also rasterized and exported as texture assets.
+- When sibling layers or folders share the same name, the importer adds stable suffixes such as `_2`, `_3` to keep generated assets unique.
+- The same stable naming is used by re-import conflict matching, so existing generated files continue to match as long as the parent structure and relative order of same-name siblings stay the same.
+
 ## Photoshop Compatibility (Rasterize)
 
 Photoshop Smart Objects are not fully supported by this importer pipeline. Rasterize the relevant layers before import.
@@ -281,4 +295,3 @@ MIT License. See [LICENSE.md](LICENSE.md).
 ## Credit
 
 This project is based on the original **UnityPSDLayoutTool** and keeps the same MIT license model.
-

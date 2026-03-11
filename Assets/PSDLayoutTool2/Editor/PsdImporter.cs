@@ -98,6 +98,89 @@
         private static bool isConflictSelectionDialogOpen;
 
         /// <summary>
+        /// Stores resolved import metadata for layers in the current import run.
+        /// </summary>
+        private static Dictionary<Layer, LayerImportInfo> currentLayerInfos;
+
+        /// <summary>
+        /// Represents how a button-group child should be interpreted.
+        /// </summary>
+        private enum ButtonChildRole
+        {
+            None,
+            Default,
+            Pressed,
+            Highlighted,
+            Disabled,
+            TextImage
+        }
+
+        /// <summary>
+        /// Stores resolved import metadata for one PSD layer.
+        /// </summary>
+        private sealed class LayerImportInfo
+        {
+            /// <summary>
+            /// Initializes a new instance of the <see cref="LayerImportInfo"/> class.
+            /// </summary>
+            /// <param name="layer">PSD layer.</param>
+            public LayerImportInfo(Layer layer)
+            {
+                Layer = layer;
+            }
+
+            /// <summary>
+            /// Gets the source PSD layer.
+            /// </summary>
+            public Layer Layer { get; private set; }
+
+            /// <summary>
+            /// Gets or sets the resolved parent info.
+            /// </summary>
+            public LayerImportInfo Parent { get; set; }
+
+            /// <summary>
+            /// Gets or sets a value indicating whether this layer is visible after inheriting parent visibility.
+            /// </summary>
+            public bool EffectiveVisible { get; set; }
+
+            /// <summary>
+            /// Gets or sets a value indicating whether this layer behaves like a folder/group.
+            /// </summary>
+            public bool IsFolderLike { get; set; }
+
+            /// <summary>
+            /// Gets or sets a value indicating whether this layer is a |Button group.
+            /// </summary>
+            public bool IsButtonGroup { get; set; }
+
+            /// <summary>
+            /// Gets or sets a value indicating whether this layer is a |Animation group.
+            /// </summary>
+            public bool IsAnimationGroup { get; set; }
+
+            /// <summary>
+            /// Gets or sets the parsed button-child role when parent is a button group.
+            /// </summary>
+            public ButtonChildRole ButtonRole { get; set; }
+
+            /// <summary>
+            /// Gets or sets the unique stable name for this layer among siblings.
+            /// </summary>
+            public string UniqueSelfName { get; set; }
+
+            /// <summary>
+            /// Gets or sets the unique stable texture/file base name in the current output directory.
+            /// </summary>
+            public string UniqueTextureName { get; set; }
+
+            /// <summary>
+            /// Gets or sets the parsed animation frame rate.
+            /// </summary>
+            public float AnimationFps { get; set; }
+        }
+
+        /// <summary>
         /// Initializes static members of the <see cref="PsdImporter"/> class.
         /// </summary>
         static PsdImporter()
@@ -250,6 +333,7 @@
             currentDepth = MaximumDepth;
             currentSortingOrder = 0;
             UseTargetCanvasCoordinates = false;
+            currentLayerInfos = null;
             string normalizedAssetPath = asset.Replace('\\', '/');
             string fullPath = Path.Combine(GetFullProjectPath(), normalizedAssetPath);
 
@@ -267,7 +351,14 @@
             string prefabRelativePath = CreatePrefab ? GetPrefabRelativePath(outputRelativePath) : string.Empty;
 
             List<Layer> tree = BuildLayerTree(psd.Layers) ?? new List<Layer>();
-            ImportConflictAnalysis conflictAnalysis = AnalyzeImportConflicts(tree, outputRelativePath, outputFullPath, prefabRelativePath);
+            currentLayerInfos = BuildLayerImportInfoMap(tree);
+            bool hasVisibleRuntimeObjects = HasVisibleRuntimeContent(tree);
+            ImportConflictAnalysis conflictAnalysis = AnalyzeImportConflicts(
+                tree,
+                outputRelativePath,
+                outputFullPath,
+                prefabRelativePath,
+                hasVisibleRuntimeObjects);
 
             ImportConflictSelection effectiveSelection = forcedSelection;
             if (!skipConflictPrompt && conflictAnalysis.HasExistingTargets)
@@ -275,6 +366,7 @@
                 bool updateExistingFiles = PromptForUpdatingExistingFiles(conflictAnalysis);
                 if (!updateExistingFiles)
                 {
+                    currentLayerInfos = null;
                     return;
                 }
 
@@ -286,6 +378,7 @@
                             "PSDLayoutTool2",
                             "已有一个更新/删除确认窗口正在打开，请先完成该操作。",
                             "确定");
+                        currentLayerInfos = null;
                         return;
                     }
 
@@ -304,6 +397,7 @@
 
                             Import(asset, selection, true);
                         });
+                    currentLayerInfos = null;
                     return;
                 }
 
@@ -319,10 +413,13 @@
 
                 if (effectiveSelection != null)
                 {
-                    DeleteSelectedFiles(effectiveSelection.PathsToDelete, outputFullPath);
+                    DeleteSelectedFiles(effectiveSelection.PathsToDelete, outputFullPath, conflictAnalysis.PrefabFullPath);
                 }
 
-                if (LayoutInScene || CreatePrefab)
+                rootPsdGameObject = null;
+                currentGroupGameObject = null;
+
+                if ((LayoutInScene || CreatePrefab) && hasVisibleRuntimeObjects)
                 {
                     if (UseUnityUI)
                     {
@@ -357,14 +454,14 @@
 
                 ExportTree(tree);
 
-                if (CreatePrefab)
+                if (CreatePrefab && rootPsdGameObject != null)
                 {
                     if (ShouldSavePrefab(prefabRelativePath))
                     {
                         PrefabUtility.SaveAsPrefabAsset(rootPsdGameObject, prefabRelativePath);
                     }
 
-                    if (!LayoutInScene)
+                    if (!LayoutInScene && rootPsdGameObject != null)
                     {
                         // if we are not flagged to layout in the scene, delete the GameObject used to generate the prefab
                         UnityEngine.Object.DestroyImmediate(rootPsdGameObject);
@@ -376,6 +473,7 @@
             finally
             {
                 ClearCurrentImportSelection();
+                currentLayerInfos = null;
             }
         }
 
@@ -391,7 +489,8 @@
             List<Layer> tree,
             string outputRelativePath,
             string outputFullPath,
-            string prefabRelativePath)
+            string prefabRelativePath,
+            bool hasVisibleRuntimeObjects)
         {
             ImportConflictAnalysis analysis = new ImportConflictAnalysis();
             analysis.OutputRelativePath = outputRelativePath;
@@ -406,20 +505,35 @@
             analysis.HasExistingOutputDirectory = Directory.Exists(outputFullPath);
             analysis.HasExistingPrefab = !string.IsNullOrEmpty(analysis.PrefabFullPath) && File.Exists(analysis.PrefabFullPath);
 
-            HashSet<string> generatedTexturePaths = CollectExpectedTexturePaths(tree, outputFullPath);
-            HashSet<string> existingTexturePaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            HashSet<string> generatedAssetPaths = CollectExpectedGeneratedAssetPaths(
+                tree,
+                outputFullPath,
+                analysis.PrefabFullPath,
+                hasVisibleRuntimeObjects);
+            HashSet<string> existingGeneratedPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             if (analysis.HasExistingOutputDirectory)
             {
-                string[] existingFiles = Directory.GetFiles(outputFullPath, "*.png", SearchOption.AllDirectories);
+                string[] existingFiles = Directory.GetFiles(outputFullPath, "*.*", SearchOption.AllDirectories);
                 foreach (string existingFile in existingFiles)
                 {
-                    existingTexturePaths.Add(NormalizePath(existingFile));
+                    string extension = Path.GetExtension(existingFile);
+                    if (string.Equals(extension, ".png", StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(extension, ".anim", StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(extension, ".controller", StringComparison.OrdinalIgnoreCase))
+                    {
+                        existingGeneratedPaths.Add(NormalizePath(existingFile));
+                    }
                 }
             }
 
-            foreach (string existingFile in existingTexturePaths)
+            if (analysis.HasExistingPrefab)
             {
-                if (generatedTexturePaths.Contains(existingFile))
+                existingGeneratedPaths.Add(NormalizePath(analysis.PrefabFullPath));
+            }
+
+            foreach (string existingFile in existingGeneratedPaths)
+            {
+                if (generatedAssetPaths.Contains(existingFile))
                 {
                     analysis.SameNamePaths.Add(existingFile);
                 }
@@ -461,7 +575,10 @@
 
             foreach (string path in analysis.SameNamePaths)
             {
-                selection.PathsToUpdate.Add(NormalizePath(path));
+                if (!string.Equals(Path.GetExtension(path), ".prefab", StringComparison.OrdinalIgnoreCase))
+                {
+                    selection.PathsToUpdate.Add(NormalizePath(path));
+                }
             }
 
             foreach (string path in analysis.DeletedPaths)
@@ -483,7 +600,7 @@
             messageBuilder.AppendLine("检测到已有同名导入目标：");
             if (analysis.HasExistingOutputDirectory)
             {
-                messageBuilder.AppendLine("纹理目录: " + analysis.OutputRelativePath);
+                messageBuilder.AppendLine("输出目录: " + analysis.OutputRelativePath);
             }
 
             if (analysis.HasExistingPrefab)
@@ -523,23 +640,26 @@
         }
 
         /// <summary>
-        /// Deletes selected stale files and their meta files from the output directory.
+        /// Deletes selected stale generated files and their meta files.
         /// </summary>
         /// <param name="pathsToDelete">Files selected for deletion.</param>
         /// <param name="outputFullPath">Import output root path.</param>
-        private static void DeleteSelectedFiles(HashSet<string> pathsToDelete, string outputFullPath)
+        /// <param name="prefabFullPath">Resolved prefab full path, if any.</param>
+        private static void DeleteSelectedFiles(HashSet<string> pathsToDelete, string outputFullPath, string prefabFullPath)
         {
-            if (pathsToDelete == null || pathsToDelete.Count == 0 || !Directory.Exists(outputFullPath))
+            if (pathsToDelete == null || pathsToDelete.Count == 0)
             {
                 return;
             }
 
             string normalizedRoot = NormalizePath(outputFullPath).TrimEnd('/');
+            string normalizedPrefabPath = string.IsNullOrEmpty(prefabFullPath) ? string.Empty : NormalizePath(prefabFullPath);
 
             foreach (string selectedPath in pathsToDelete)
             {
                 string normalizedPath = NormalizePath(selectedPath);
-                if (!IsPathInsideDirectory(normalizedPath, normalizedRoot))
+                if (!IsPathInsideDirectory(normalizedPath, normalizedRoot) &&
+                    !string.Equals(normalizedPath, normalizedPrefabPath, StringComparison.OrdinalIgnoreCase))
                 {
                     continue;
                 }
@@ -547,7 +667,10 @@
                 DeleteFileWithMeta(normalizedPath);
             }
 
-            DeleteEmptySubDirectories(outputFullPath);
+            if (Directory.Exists(outputFullPath))
+            {
+                DeleteEmptySubDirectories(outputFullPath);
+            }
         }
 
         /// <summary>
@@ -572,6 +695,31 @@
         }
 
         /// <summary>
+        /// Prepares an asset path for CreateAsset by honoring overwrite selection and deleting the old asset when allowed.
+        /// </summary>
+        /// <param name="assetRelativePath">Asset path relative to project root.</param>
+        /// <returns>True if a new asset should be created at this path; otherwise false.</returns>
+        private static bool PrepareAssetPathForCreate(string assetRelativePath)
+        {
+            string assetFullPath = NormalizePath(
+                Path.Combine(GetFullProjectPath(), assetRelativePath.Replace('/', Path.DirectorySeparatorChar)));
+            if (!ShouldOverwriteExistingGeneratedFile(assetFullPath))
+            {
+                return false;
+            }
+
+            if (File.Exists(assetFullPath))
+            {
+                if (!AssetDatabase.DeleteAsset(assetRelativePath))
+                {
+                    DeleteFileWithMeta(assetFullPath);
+                }
+            }
+
+            return true;
+        }
+
+        /// <summary>
         /// Determines whether the prefab should be saved for this import run.
         /// </summary>
         /// <param name="prefabRelativePath">Prefab path relative to project.</param>
@@ -585,179 +733,111 @@
 
             string prefabFullPath = NormalizePath(
                 Path.Combine(GetFullProjectPath(), prefabRelativePath.Replace('/', Path.DirectorySeparatorChar)));
-
-            // Re-import should not overwrite an existing prefab, so user-adjusted anchors/components stay intact.
-            return !File.Exists(prefabFullPath);
+            return ShouldOverwriteExistingGeneratedFile(prefabFullPath);
         }
 
         /// <summary>
-        /// Collects all texture files that would be generated by exporting the given layer tree.
+        /// Collects all generated asset paths for the current import.
         /// </summary>
         /// <param name="tree">Layer tree for the PSD.</param>
         /// <param name="outputFullPath">Output root directory path.</param>
-        /// <returns>Set of absolute generated texture paths.</returns>
-        private static HashSet<string> CollectExpectedTexturePaths(List<Layer> tree, string outputFullPath)
+        /// <param name="prefabFullPath">Resolved prefab full path.</param>
+        /// <param name="hasVisibleRuntimeObjects">Whether runtime content will be generated.</param>
+        /// <returns>Set of absolute generated asset paths.</returns>
+        private static HashSet<string> CollectExpectedGeneratedAssetPaths(
+            List<Layer> tree,
+            string outputFullPath,
+            string prefabFullPath,
+            bool hasVisibleRuntimeObjects)
         {
             HashSet<string> expectedPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            if (tree == null)
+            if (tree != null)
             {
-                return expectedPaths;
+                for (int i = tree.Count - 1; i >= 0; i--)
+                {
+                    CollectExpectedGeneratedAssetPathsForLayer(tree[i], outputFullPath, expectedPaths);
+                }
             }
 
-            for (int i = tree.Count - 1; i >= 0; i--)
+            if (CreatePrefab && hasVisibleRuntimeObjects && !string.IsNullOrEmpty(prefabFullPath))
             {
-                CollectExpectedTexturePathsForLayer(tree[i], outputFullPath, expectedPaths);
+                expectedPaths.Add(NormalizePath(prefabFullPath));
             }
 
             return expectedPaths;
         }
 
         /// <summary>
-        /// Recursively collects generated texture paths for a single layer.
+        /// Recursively collects generated asset paths for one layer.
         /// </summary>
         /// <param name="layer">Layer to inspect.</param>
         /// <param name="currentDirectory">Current output directory for this layer.</param>
-        /// <param name="result">Destination set for generated texture paths.</param>
-        private static void CollectExpectedTexturePathsForLayer(Layer layer, string currentDirectory, HashSet<string> result)
+        /// <param name="result">Destination set for generated assets.</param>
+        private static void CollectExpectedGeneratedAssetPathsForLayer(Layer layer, string currentDirectory, HashSet<string> result)
         {
-            string safeLayerName = MakeNameSafe(layer.Name);
-            if (layer.Children.Count > 0 || layer.Rect.width == 0)
-            {
-                CollectExpectedTexturePathsForFolderLayer(layer, safeLayerName, currentDirectory, result);
-                return;
-            }
-
-            if (layer.IsTextLayer || layer.Rect.width <= 0)
+            LayerImportInfo info = GetLayerInfo(layer);
+            if (info == null)
             {
                 return;
             }
 
-            string texturePath = Path.Combine(currentDirectory, safeLayerName + ".png");
-            result.Add(NormalizePath(texturePath));
+            if (info.IsButtonGroup)
+            {
+                CollectExpectedGeneratedAssetPathsForButtonGroup(layer, currentDirectory, result);
+                return;
+            }
+
+            if (DoesLayerCreateOutputDirectory(info))
+            {
+                string childDirectory = Path.Combine(currentDirectory, GetOutputFolderName(layer));
+                for (int i = layer.Children.Count - 1; i >= 0; i--)
+                {
+                    CollectExpectedGeneratedAssetPathsForLayer(layer.Children[i], childDirectory, result);
+                }
+
+                if ((LayoutInScene || CreatePrefab) &&
+                    info.EffectiveVisible &&
+                    info.IsAnimationGroup &&
+                    !UseUnityUI &&
+                    GetVisibleAnimationFrameLayers(layer).Count > 0)
+                {
+                    string assetBaseName = GetOutputFolderName(layer);
+                    result.Add(NormalizePath(Path.Combine(childDirectory, assetBaseName + ".anim")));
+                    result.Add(NormalizePath(Path.Combine(childDirectory, assetBaseName + ".controller")));
+                }
+
+                return;
+            }
+
+            if (ShouldLayerEmitTextureFile(info))
+            {
+                string texturePath = Path.Combine(currentDirectory, GetTextureBaseName(layer) + ".png");
+                result.Add(NormalizePath(texturePath));
+            }
         }
 
         /// <summary>
-        /// Collects generated texture paths for folder/group layers.
+        /// Collects generated asset paths produced by a button group.
         /// </summary>
-        /// <param name="layer">Folder layer to inspect.</param>
-        /// <param name="safeLayerName">Layer name after <see cref="MakeNameSafe(string)"/>.</param>
-        /// <param name="currentDirectory">Current output directory for this layer.</param>
-        /// <param name="result">Destination set for generated texture paths.</param>
-        private static void CollectExpectedTexturePathsForFolderLayer(
+        /// <param name="layer">Button group layer.</param>
+        /// <param name="currentDirectory">Current output directory.</param>
+        /// <param name="result">Destination set for generated assets.</param>
+        private static void CollectExpectedGeneratedAssetPathsForButtonGroup(
             Layer layer,
-            string safeLayerName,
             string currentDirectory,
             HashSet<string> result)
         {
-            if (safeLayerName.ContainsIgnoreCase("|Button"))
-            {
-                CollectButtonTexturePaths(layer, currentDirectory, result);
-                return;
-            }
-
-            if (safeLayerName.ContainsIgnoreCase("|Animation"))
-            {
-                string animationLayerName = safeLayerName.ReplaceIgnoreCase("|Animation", string.Empty);
-                string[] nameParts = animationLayerName.Split(new[] { '|' }, StringSplitOptions.RemoveEmptyEntries);
-                string animationFolderName = nameParts.Length > 0 ? nameParts[0] : animationLayerName;
-                if (string.IsNullOrEmpty(animationFolderName))
-                {
-                    animationFolderName = "Animation";
-                }
-
-                string animationFolderPath = Path.Combine(currentDirectory, animationFolderName);
-                foreach (Layer child in layer.Children)
-                {
-                    if (child.Children.Count == 0 && child.Rect.width > 0)
-                    {
-                        string path = Path.Combine(animationFolderPath, child.Name + ".png");
-                        result.Add(NormalizePath(path));
-                    }
-                }
-
-                return;
-            }
-
-            string childDirectory = Path.Combine(currentDirectory, safeLayerName);
-            for (int i = layer.Children.Count - 1; i >= 0; i--)
-            {
-                CollectExpectedTexturePathsForLayer(layer.Children[i], childDirectory, result);
-            }
-        }
-
-        /// <summary>
-        /// Collects texture outputs produced by <c>|Button</c> layers.
-        /// </summary>
-        /// <param name="layer">Button layer.</param>
-        /// <param name="currentDirectory">Current output directory.</param>
-        /// <param name="result">Destination set for generated texture paths.</param>
-        private static void CollectButtonTexturePaths(Layer layer, string currentDirectory, HashSet<string> result)
-        {
             foreach (Layer child in layer.Children)
             {
-                string textureName;
-                if (!TryGetButtonTextureName(child, out textureName))
+                LayerImportInfo childInfo = GetLayerInfo(child);
+                if (!ShouldButtonGroupChildEmitTexture(childInfo))
                 {
                     continue;
                 }
 
-                if (child.Children.Count > 0 || child.Rect.width <= 0)
-                {
-                    continue;
-                }
-
-                string path = Path.Combine(currentDirectory, textureName + ".png");
+                string path = Path.Combine(currentDirectory, GetTextureBaseName(child) + ".png");
                 result.Add(NormalizePath(path));
             }
-        }
-
-        /// <summary>
-        /// Attempts to resolve the generated texture name for a button child layer.
-        /// </summary>
-        /// <param name="layer">Button child layer.</param>
-        /// <param name="textureName">Resolved output texture name.</param>
-        /// <returns>True if this child creates a texture; otherwise false.</returns>
-        private static bool TryGetButtonTextureName(Layer layer, out string textureName)
-        {
-            textureName = layer.Name;
-
-            if (layer.Name.ContainsIgnoreCase("|Disabled"))
-            {
-                textureName = layer.Name.ReplaceIgnoreCase("|Disabled", string.Empty);
-                return true;
-            }
-
-            if (layer.Name.ContainsIgnoreCase("|Highlighted"))
-            {
-                textureName = layer.Name.ReplaceIgnoreCase("|Highlighted", string.Empty);
-                return true;
-            }
-
-            if (layer.Name.ContainsIgnoreCase("|Pressed"))
-            {
-                textureName = layer.Name.ReplaceIgnoreCase("|Pressed", string.Empty);
-                return true;
-            }
-
-            if (layer.Name.ContainsIgnoreCase("|Default") ||
-                layer.Name.ContainsIgnoreCase("|Enabled") ||
-                layer.Name.ContainsIgnoreCase("|Normal") ||
-                layer.Name.ContainsIgnoreCase("|Up"))
-            {
-                textureName = layer.Name.ReplaceIgnoreCase("|Default", string.Empty);
-                textureName = textureName.ReplaceIgnoreCase("|Enabled", string.Empty);
-                textureName = textureName.ReplaceIgnoreCase("|Normal", string.Empty);
-                textureName = textureName.ReplaceIgnoreCase("|Up", string.Empty);
-                return true;
-            }
-
-            if (layer.Name.ContainsIgnoreCase("|Text") && !layer.IsTextLayer)
-            {
-                textureName = layer.Name.ReplaceIgnoreCase("|Text", string.Empty);
-                return true;
-            }
-
-            return false;
         }
 
         /// <summary>
@@ -861,6 +941,654 @@
                     Debug.LogWarning(string.Format("Failed to remove directory '{0}': {1}", subDirectory, ex.Message));
                 }
             }
+        }
+
+        /// <summary>
+        /// Resolves cached import metadata for a layer.
+        /// </summary>
+        /// <param name="layer">PSD layer.</param>
+        /// <returns>Layer metadata if available.</returns>
+        private static LayerImportInfo GetLayerInfo(Layer layer)
+        {
+            if (layer == null || currentLayerInfos == null)
+            {
+                return null;
+            }
+
+            LayerImportInfo info;
+            return currentLayerInfos.TryGetValue(layer, out info) ? info : null;
+        }
+
+        /// <summary>
+        /// Builds import metadata for the current layer tree.
+        /// </summary>
+        /// <param name="tree">Top-level layer tree.</param>
+        /// <returns>Metadata keyed by PSD layer instance.</returns>
+        private static Dictionary<Layer, LayerImportInfo> BuildLayerImportInfoMap(List<Layer> tree)
+        {
+            Dictionary<Layer, LayerImportInfo> infoMap = new Dictionary<Layer, LayerImportInfo>();
+            if (tree == null)
+            {
+                return infoMap;
+            }
+
+            foreach (Layer layer in tree)
+            {
+                CreateLayerImportInfo(layer, null, true, infoMap);
+            }
+
+            AssignUniqueSelfNamesRecursively(tree, infoMap);
+            AssignUniqueTextureNamesForScope(tree, infoMap);
+            return infoMap;
+        }
+
+        /// <summary>
+        /// Creates import metadata for one layer and its descendants.
+        /// </summary>
+        /// <param name="layer">Layer to inspect.</param>
+        /// <param name="parent">Parent metadata.</param>
+        /// <param name="parentVisible">Inherited parent visibility.</param>
+        /// <param name="infoMap">Destination map.</param>
+        private static void CreateLayerImportInfo(
+            Layer layer,
+            LayerImportInfo parent,
+            bool parentVisible,
+            Dictionary<Layer, LayerImportInfo> infoMap)
+        {
+            LayerImportInfo info = new LayerImportInfo(layer)
+            {
+                Parent = parent,
+                EffectiveVisible = parentVisible && layer.Visible,
+                IsFolderLike = layer.Children.Count > 0 || layer.Rect.width == 0,
+                AnimationFps = GetAnimationFps(layer.Name)
+            };
+
+            info.IsButtonGroup = info.IsFolderLike && layer.Name.ContainsIgnoreCase("|Button");
+            info.IsAnimationGroup = info.IsFolderLike && layer.Name.ContainsIgnoreCase("|Animation");
+            info.ButtonRole = parent != null && parent.IsButtonGroup ? GetButtonChildRole(layer) : ButtonChildRole.None;
+
+            infoMap[layer] = info;
+
+            foreach (Layer child in layer.Children)
+            {
+                CreateLayerImportInfo(child, info, info.EffectiveVisible, infoMap);
+            }
+        }
+
+        /// <summary>
+        /// Assigns stable unique names among siblings for all layers.
+        /// </summary>
+        /// <param name="siblings">Sibling layers.</param>
+        /// <param name="infoMap">Layer metadata map.</param>
+        private static void AssignUniqueSelfNamesRecursively(List<Layer> siblings, Dictionary<Layer, LayerImportInfo> infoMap)
+        {
+            if (siblings == null || siblings.Count == 0)
+            {
+                return;
+            }
+
+            List<LayerImportInfo> siblingInfos = siblings.Select(layer => infoMap[layer]).ToList();
+            AssignUniqueNames(
+                siblingInfos,
+                GetStableSelfBaseName,
+                (info, uniqueName) => info.UniqueSelfName = uniqueName,
+                "Layer");
+
+            foreach (Layer sibling in siblings)
+            {
+                AssignUniqueSelfNamesRecursively(sibling.Children, infoMap);
+            }
+        }
+
+        /// <summary>
+        /// Assigns unique texture/file names inside one output directory scope.
+        /// </summary>
+        /// <param name="siblings">Sibling layers that share one output directory scope.</param>
+        /// <param name="infoMap">Layer metadata map.</param>
+        private static void AssignUniqueTextureNamesForScope(List<Layer> siblings, Dictionary<Layer, LayerImportInfo> infoMap)
+        {
+            if (siblings == null || siblings.Count == 0)
+            {
+                return;
+            }
+
+            List<LayerImportInfo> fileEmitters = CollectFileEmittersForScope(siblings, infoMap);
+            AssignUniqueNames(
+                fileEmitters,
+                GetPreferredTextureBaseName,
+                (info, uniqueName) => info.UniqueTextureName = uniqueName,
+                "Layer");
+
+            foreach (Layer sibling in siblings)
+            {
+                LayerImportInfo info = infoMap[sibling];
+                if (DoesLayerCreateOutputDirectory(info))
+                {
+                    AssignUniqueTextureNamesForScope(sibling.Children, infoMap);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Collects all layers that export texture files in the current output directory.
+        /// </summary>
+        /// <param name="siblings">Sibling layers in the current scope.</param>
+        /// <param name="infoMap">Layer metadata map.</param>
+        /// <returns>Ordered file emitters for the current directory.</returns>
+        private static List<LayerImportInfo> CollectFileEmittersForScope(List<Layer> siblings, Dictionary<Layer, LayerImportInfo> infoMap)
+        {
+            List<LayerImportInfo> emitters = new List<LayerImportInfo>();
+
+            foreach (Layer sibling in siblings)
+            {
+                LayerImportInfo info = infoMap[sibling];
+                if (info.IsButtonGroup)
+                {
+                    foreach (Layer child in sibling.Children)
+                    {
+                        LayerImportInfo childInfo = infoMap[child];
+                        if (ShouldButtonGroupChildEmitTexture(childInfo))
+                        {
+                            emitters.Add(childInfo);
+                        }
+                    }
+
+                    continue;
+                }
+
+                if (!info.IsFolderLike && ShouldLayerEmitTextureFile(info))
+                {
+                    emitters.Add(info);
+                }
+            }
+
+            return emitters;
+        }
+
+        /// <summary>
+        /// Assigns unique suffixes like _2/_3 while preserving the first occurrence.
+        /// </summary>
+        /// <typeparam name="T">Item type.</typeparam>
+        /// <param name="items">Items in stable order.</param>
+        /// <param name="baseNameSelector">Gets the base name for one item.</param>
+        /// <param name="assign">Applies the resolved unique name.</param>
+        /// <param name="fallbackBaseName">Fallback when the base name is empty.</param>
+        private static void AssignUniqueNames<T>(
+            IEnumerable<T> items,
+            Func<T, string> baseNameSelector,
+            Action<T, string> assign,
+            string fallbackBaseName)
+        {
+            Dictionary<string, int> counts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (T item in items)
+            {
+                string baseName = SanitizeStableName(baseNameSelector(item), fallbackBaseName);
+                int currentCount;
+                counts.TryGetValue(baseName, out currentCount);
+                currentCount++;
+                counts[baseName] = currentCount;
+
+                assign(item, currentCount == 1 ? baseName : string.Format("{0}_{1}", baseName, currentCount));
+            }
+        }
+
+        /// <summary>
+        /// Gets the stable sibling-name base for a layer.
+        /// </summary>
+        /// <param name="info">Layer metadata.</param>
+        /// <returns>Tag-stripped, sanitized base name.</returns>
+        private static string GetStableSelfBaseName(LayerImportInfo info)
+        {
+            if (info == null)
+            {
+                return "Layer";
+            }
+
+            if (info.IsAnimationGroup)
+            {
+                return SanitizeStableName(GetAnimationLayerBaseName(info.Layer.Name), "Animation");
+            }
+
+            if (info.IsButtonGroup)
+            {
+                return SanitizeStableName(RemoveTagIgnoreCase(info.Layer.Name, "|Button"), "Button");
+            }
+
+            if (info.Parent != null && info.Parent.IsButtonGroup)
+            {
+                return SanitizeStableName(GetButtonChildBaseName(info.Layer), info.Layer.IsTextLayer ? "Text" : "Layer");
+            }
+
+            return SanitizeStableName(info.Layer.Name, info.IsFolderLike ? "Folder" : "Layer");
+        }
+
+        /// <summary>
+        /// Gets the preferred texture base name inside the current output directory.
+        /// </summary>
+        /// <param name="info">Layer metadata.</param>
+        /// <returns>Preferred texture base name.</returns>
+        private static string GetPreferredTextureBaseName(LayerImportInfo info)
+        {
+            if (info == null)
+            {
+                return "Layer";
+            }
+
+            if (info.Parent != null && info.Parent.IsButtonGroup)
+            {
+                string parentName = info.Parent.UniqueSelfName ?? GetStableSelfBaseName(info.Parent);
+                string childName = info.UniqueSelfName ?? GetStableSelfBaseName(info);
+                return SanitizeStableName(string.Format("{0}_{1}", parentName, childName), "Layer");
+            }
+
+            return info.UniqueSelfName ?? GetStableSelfBaseName(info);
+        }
+
+        /// <summary>
+        /// Gets the base name used for animation folders/assets.
+        /// </summary>
+        /// <param name="name">Original layer name.</param>
+        /// <returns>Animation base name.</returns>
+        private static string GetAnimationLayerBaseName(string name)
+        {
+            string strippedName = RemoveAnimationTags(name);
+            string[] nameParts = strippedName.Split(new[] { '|' }, StringSplitOptions.RemoveEmptyEntries);
+            string baseName = nameParts.Length > 0 ? nameParts[0] : strippedName;
+            return string.IsNullOrWhiteSpace(baseName) ? "Animation" : baseName.Trim();
+        }
+
+        /// <summary>
+        /// Removes animation-related tags from a layer name.
+        /// </summary>
+        /// <param name="name">Layer name.</param>
+        /// <returns>Name without animation tags.</returns>
+        private static string RemoveAnimationTags(string name)
+        {
+            string strippedName = RemoveTagIgnoreCase(name, "|Animation");
+            return Regex.Replace(strippedName, "\\|FPS=[^|]+", string.Empty, RegexOptions.IgnoreCase);
+        }
+
+        /// <summary>
+        /// Parses animation FPS from the layer name.
+        /// </summary>
+        /// <param name="name">Layer name.</param>
+        /// <returns>Frame rate, defaulting to 30 when unspecified.</returns>
+        private static float GetAnimationFps(string name)
+        {
+            float fps = 30f;
+            if (string.IsNullOrEmpty(name))
+            {
+                return fps;
+            }
+
+            string[] args = name.Split(new[] { '|' }, StringSplitOptions.RemoveEmptyEntries);
+            foreach (string arg in args)
+            {
+                if (!arg.StartsWith("FPS=", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                float parsedFps;
+                if (float.TryParse(arg.Substring(4), out parsedFps))
+                {
+                    fps = parsedFps;
+                }
+                else
+                {
+                    Debug.LogError(string.Format("Unable to parse FPS: \"{0}\"", arg));
+                }
+
+                break;
+            }
+
+            return fps;
+        }
+
+        /// <summary>
+        /// Gets the role of a button child layer.
+        /// </summary>
+        /// <param name="layer">Button child layer.</param>
+        /// <returns>Resolved button role.</returns>
+        private static ButtonChildRole GetButtonChildRole(Layer layer)
+        {
+            if (layer == null)
+            {
+                return ButtonChildRole.None;
+            }
+
+            if (layer.Name.ContainsIgnoreCase("|Disabled"))
+            {
+                return ButtonChildRole.Disabled;
+            }
+
+            if (layer.Name.ContainsIgnoreCase("|Highlighted"))
+            {
+                return ButtonChildRole.Highlighted;
+            }
+
+            if (layer.Name.ContainsIgnoreCase("|Pressed"))
+            {
+                return ButtonChildRole.Pressed;
+            }
+
+            if (layer.Name.ContainsIgnoreCase("|Default") ||
+                layer.Name.ContainsIgnoreCase("|Enabled") ||
+                layer.Name.ContainsIgnoreCase("|Normal") ||
+                layer.Name.ContainsIgnoreCase("|Up"))
+            {
+                return ButtonChildRole.Default;
+            }
+
+            if (layer.Name.ContainsIgnoreCase("|Text") && !layer.IsTextLayer)
+            {
+                return ButtonChildRole.TextImage;
+            }
+
+            return ButtonChildRole.None;
+        }
+
+        /// <summary>
+        /// Gets a button child name with button-state tags removed.
+        /// </summary>
+        /// <param name="layer">Button child layer.</param>
+        /// <returns>Tag-stripped base name.</returns>
+        private static string GetButtonChildBaseName(Layer layer)
+        {
+            string name = layer != null ? layer.Name : string.Empty;
+            name = RemoveTagIgnoreCase(name, "|Disabled");
+            name = RemoveTagIgnoreCase(name, "|Highlighted");
+            name = RemoveTagIgnoreCase(name, "|Pressed");
+            name = RemoveTagIgnoreCase(name, "|Default");
+            name = RemoveTagIgnoreCase(name, "|Enabled");
+            name = RemoveTagIgnoreCase(name, "|Normal");
+            name = RemoveTagIgnoreCase(name, "|Up");
+
+            if (layer != null && !layer.IsTextLayer)
+            {
+                name = RemoveTagIgnoreCase(name, "|Text");
+            }
+
+            return name;
+        }
+
+        /// <summary>
+        /// Removes one tag from a name without case sensitivity.
+        /// </summary>
+        /// <param name="name">Source string.</param>
+        /// <param name="tag">Tag to remove.</param>
+        /// <returns>Updated string.</returns>
+        private static string RemoveTagIgnoreCase(string name, string tag)
+        {
+            return string.IsNullOrEmpty(name) ? string.Empty : name.ReplaceIgnoreCase(tag, string.Empty);
+        }
+
+        /// <summary>
+        /// Converts a name into a stable filesystem-safe identifier without extra logging.
+        /// </summary>
+        /// <param name="name">Raw name.</param>
+        /// <param name="fallbackName">Fallback when the name is empty.</param>
+        /// <returns>Sanitized stable name.</returns>
+        private static string SanitizeStableName(string name, string fallbackName)
+        {
+            string safeName = MakeNameSafeSilently(string.IsNullOrWhiteSpace(name) ? fallbackName : name.Trim());
+            if (string.IsNullOrWhiteSpace(safeName))
+            {
+                safeName = MakeNameSafeSilently(fallbackName);
+            }
+
+            return string.IsNullOrWhiteSpace(safeName) ? fallbackName : safeName;
+        }
+
+        /// <summary>
+        /// Converts a name into a filesystem-safe identifier without logging.
+        /// </summary>
+        /// <param name="name">Name to sanitize.</param>
+        /// <returns>Sanitized name.</returns>
+        private static string MakeNameSafeSilently(string name)
+        {
+            return string.IsNullOrEmpty(name) ? string.Empty : Regex.Replace(name, "[/:&.<>,$¢;+]", "_");
+        }
+
+        /// <summary>
+        /// Returns true if the layer creates a dedicated output subdirectory.
+        /// </summary>
+        /// <param name="info">Layer metadata.</param>
+        /// <returns>True if the layer writes into a dedicated subdirectory.</returns>
+        private static bool DoesLayerCreateOutputDirectory(LayerImportInfo info)
+        {
+            return info != null && info.IsFolderLike && !info.IsButtonGroup;
+        }
+
+        /// <summary>
+        /// Returns true if the layer exports its own texture file.
+        /// </summary>
+        /// <param name="info">Layer metadata.</param>
+        /// <returns>True if the layer exports a texture file.</returns>
+        private static bool ShouldLayerEmitTextureFile(LayerImportInfo info)
+        {
+            if (info == null || info.IsFolderLike || info.Layer.Rect.width <= 0 || info.Layer.Rect.height <= 0)
+            {
+                return false;
+            }
+
+            if (!info.Layer.IsTextLayer)
+            {
+                return true;
+            }
+
+            return !info.EffectiveVisible;
+        }
+
+        /// <summary>
+        /// Returns true if a button child should export a texture file.
+        /// </summary>
+        /// <param name="childInfo">Button child metadata.</param>
+        /// <returns>True if a texture should be exported.</returns>
+        private static bool ShouldButtonGroupChildEmitTexture(LayerImportInfo childInfo)
+        {
+            if (childInfo == null || childInfo.IsFolderLike)
+            {
+                return false;
+            }
+
+            if (childInfo.ButtonRole != ButtonChildRole.None)
+            {
+                return !childInfo.Layer.IsTextLayer || !childInfo.EffectiveVisible;
+            }
+
+            return !childInfo.EffectiveVisible && ShouldLayerEmitTextureFile(childInfo);
+        }
+
+        /// <summary>
+        /// Returns true if runtime generation already creates this button child's texture.
+        /// </summary>
+        /// <param name="childInfo">Button child metadata.</param>
+        /// <returns>True if runtime creation already handles the texture export.</returns>
+        private static bool IsButtonChildHandledByRuntime(LayerImportInfo childInfo)
+        {
+            return childInfo != null &&
+                childInfo.EffectiveVisible &&
+                childInfo.ButtonRole != ButtonChildRole.None &&
+                !childInfo.Layer.IsTextLayer;
+        }
+
+        /// <summary>
+        /// Gets all visible frame layers for an animation group.
+        /// </summary>
+        /// <param name="animationLayer">Animation group layer.</param>
+        /// <returns>Visible art-layer frames in order.</returns>
+        private static List<Layer> GetVisibleAnimationFrameLayers(Layer animationLayer)
+        {
+            List<Layer> frames = new List<Layer>();
+            if (animationLayer == null)
+            {
+                return frames;
+            }
+
+            foreach (Layer child in animationLayer.Children)
+            {
+                LayerImportInfo childInfo = GetLayerInfo(child);
+                if (childInfo == null || !childInfo.EffectiveVisible || childInfo.IsFolderLike || child.IsTextLayer)
+                {
+                    continue;
+                }
+
+                if (child.Rect.width <= 0 || child.Rect.height <= 0)
+                {
+                    continue;
+                }
+
+                frames.Add(child);
+            }
+
+            return frames;
+        }
+
+        /// <summary>
+        /// Returns true if a button group still has visible runtime content after filtering hidden layers.
+        /// </summary>
+        /// <param name="buttonLayer">Button group layer.</param>
+        /// <returns>True if the button object should be created.</returns>
+        private static bool HasVisibleButtonRuntimeContent(Layer buttonLayer)
+        {
+            if (buttonLayer == null)
+            {
+                return false;
+            }
+
+            foreach (Layer child in buttonLayer.Children)
+            {
+                if (IsButtonChildHandledByRuntime(GetLayerInfo(child)))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// Returns true if any visible runtime content exists in the tree.
+        /// </summary>
+        /// <param name="tree">Top-level tree.</param>
+        /// <returns>True if scene/prefab objects should be created.</returns>
+        private static bool HasVisibleRuntimeContent(List<Layer> tree)
+        {
+            if (!(LayoutInScene || CreatePrefab) || tree == null)
+            {
+                return false;
+            }
+
+            foreach (Layer layer in tree)
+            {
+                if (HasVisibleRuntimeContent(layer))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// Returns true if a layer or any descendants create visible runtime content.
+        /// </summary>
+        /// <param name="layer">Layer to inspect.</param>
+        /// <returns>True if runtime content exists.</returns>
+        private static bool HasVisibleRuntimeContent(Layer layer)
+        {
+            LayerImportInfo info = GetLayerInfo(layer);
+            if (info == null || !info.EffectiveVisible)
+            {
+                return false;
+            }
+
+            if (info.IsButtonGroup)
+            {
+                return UseUnityUI && HasVisibleButtonRuntimeContent(layer);
+            }
+
+            if (info.IsAnimationGroup)
+            {
+                return !UseUnityUI && GetVisibleAnimationFrameLayers(layer).Count > 0;
+            }
+
+            if (!info.IsFolderLike)
+            {
+                return true;
+            }
+
+            foreach (Layer child in layer.Children)
+            {
+                if (HasVisibleRuntimeContent(child))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// Gets the runtime object name for a layer.
+        /// </summary>
+        /// <param name="layer">Layer to inspect.</param>
+        /// <returns>Resolved runtime name.</returns>
+        private static string GetRuntimeObjectName(Layer layer)
+        {
+            LayerImportInfo info = GetLayerInfo(layer);
+            if (info == null)
+            {
+                return MakeNameSafe(layer != null ? layer.Name : "Layer");
+            }
+
+            if (info.Parent != null &&
+                info.Parent.IsButtonGroup &&
+                info.ButtonRole == ButtonChildRole.TextImage &&
+                !string.IsNullOrEmpty(info.UniqueTextureName))
+            {
+                return info.UniqueTextureName;
+            }
+
+            return string.IsNullOrEmpty(info.UniqueSelfName)
+                ? SanitizeStableName(info.Layer.Name, info.IsFolderLike ? "Folder" : "Layer")
+                : info.UniqueSelfName;
+        }
+
+        /// <summary>
+        /// Gets the output folder name for a folder-like layer.
+        /// </summary>
+        /// <param name="layer">Layer to inspect.</param>
+        /// <returns>Resolved folder name.</returns>
+        private static string GetOutputFolderName(Layer layer)
+        {
+            LayerImportInfo info = GetLayerInfo(layer);
+            return info != null && !string.IsNullOrEmpty(info.UniqueSelfName)
+                ? info.UniqueSelfName
+                : MakeNameSafe(layer.Name);
+        }
+
+        /// <summary>
+        /// Gets the texture base name for a layer.
+        /// </summary>
+        /// <param name="layer">Layer to inspect.</param>
+        /// <returns>Resolved texture base name.</returns>
+        private static string GetTextureBaseName(Layer layer)
+        {
+            LayerImportInfo info = GetLayerInfo(layer);
+            if (info != null && !string.IsNullOrEmpty(info.UniqueTextureName))
+            {
+                return info.UniqueTextureName;
+            }
+
+            if (info != null && !string.IsNullOrEmpty(info.UniqueSelfName))
+            {
+                return info.UniqueSelfName;
+            }
+
+            return MakeNameSafe(layer.Name);
         }
 
         /// <summary>
@@ -1552,8 +2280,13 @@
         /// <param name="layer">The layer to export.</param>
         private static void ExportLayer(Layer layer)
         {
-            layer.Name = MakeNameSafe(layer.Name);
-            if (layer.Children.Count > 0 || layer.Rect.width == 0)
+            LayerImportInfo info = GetLayerInfo(layer);
+            if (info == null)
+            {
+                return;
+            }
+
+            if (info.IsFolderLike)
             {
                 ExportFolderLayer(layer);
             }
@@ -1569,74 +2302,121 @@
         /// <param name="layer">The layer that is a folder.</param>
         private static void ExportFolderLayer(Layer layer)
         {
-            if (layer.Name.ContainsIgnoreCase("|Button"))
+            LayerImportInfo info = GetLayerInfo(layer);
+            if (info == null)
             {
-                layer.Name = layer.Name.ReplaceIgnoreCase("|Button", string.Empty);
+                return;
+            }
 
-                if (UseUnityUI)
+            if (info.IsButtonGroup)
+            {
+                bool createRuntimeButton =
+                    (LayoutInScene || CreatePrefab) &&
+                    UseUnityUI &&
+                    info.EffectiveVisible &&
+                    HasVisibleButtonRuntimeContent(layer);
+
+                if (createRuntimeButton)
                 {
                     CreateUIButton(layer);
                 }
-                else
-                {
-                    ////CreateGUIButton(layer);
-                }
-            }
-            else if (layer.Name.ContainsIgnoreCase("|Animation"))
-            {
-                layer.Name = layer.Name.ReplaceIgnoreCase("|Animation", string.Empty);
 
+                foreach (Layer child in layer.Children)
+                {
+                    LayerImportInfo childInfo = GetLayerInfo(child);
+                    if (!ShouldButtonGroupChildEmitTexture(childInfo))
+                    {
+                        continue;
+                    }
+
+                    if (createRuntimeButton && IsButtonChildHandledByRuntime(childInfo))
+                    {
+                        continue;
+                    }
+
+                    ExportLayerTexturesOnly(child);
+                }
+
+                return;
+            }
+
+            if (info.IsAnimationGroup)
+            {
                 string oldPath = currentPath;
                 GameObject oldGroupObject = currentGroupGameObject;
+                List<Layer> visibleFrames = GetVisibleAnimationFrameLayers(layer);
+                bool createRuntimeAnimation =
+                    (LayoutInScene || CreatePrefab) &&
+                    !UseUnityUI &&
+                    info.EffectiveVisible &&
+                    visibleFrames.Count > 0;
 
-                currentPath = Path.Combine(currentPath, layer.Name.Split(new[] { '|' }, StringSplitOptions.RemoveEmptyEntries)[0]);
+                currentPath = Path.Combine(currentPath, GetOutputFolderName(layer));
                 Directory.CreateDirectory(currentPath);
 
-                if (UseUnityUI)
-                {
-                    ////CreateUIAnimation(layer);
-                }
-                else
+                if (createRuntimeAnimation)
                 {
                     CreateAnimation(layer);
                 }
 
-                currentPath = oldPath;
-                currentGroupGameObject = oldGroupObject;
-            }
-            else
-            {
-                // it is a "normal" folder layer that contains children layers
-                string oldPath = currentPath;
-                GameObject oldGroupObject = currentGroupGameObject;
-
-                currentPath = Path.Combine(currentPath, layer.Name);
-                Directory.CreateDirectory(currentPath);
-
-                if (LayoutInScene || CreatePrefab)
+                HashSet<Layer> runtimeFrames = new HashSet<Layer>(visibleFrames);
+                foreach (Layer child in layer.Children)
                 {
-                    if (UseUnityUI && UseTargetCanvasCoordinates)
+                    if (createRuntimeAnimation && runtimeFrames.Contains(child))
                     {
-                        currentGroupGameObject = new GameObject(layer.Name, typeof(RectTransform));
-                        RectTransform groupTransform = currentGroupGameObject.GetComponent<RectTransform>();
-                        groupTransform.SetParent(oldGroupObject.transform, false);
-                        groupTransform.anchorMin = new Vector2(0.5f, 0.5f);
-                        groupTransform.anchorMax = new Vector2(0.5f, 0.5f);
-                        groupTransform.pivot = new Vector2(0.5f, 0.5f);
-                        groupTransform.anchoredPosition = Vector2.zero;
+                        continue;
                     }
-                    else
-                    {
-                        currentGroupGameObject = new GameObject(layer.Name);
-                        currentGroupGameObject.transform.parent = oldGroupObject.transform;
-                    }
+
+                    ExportLayerTexturesOnly(child);
                 }
 
-                ExportTree(layer.Children);
-
                 currentPath = oldPath;
                 currentGroupGameObject = oldGroupObject;
+                return;
             }
+
+            // it is a "normal" folder layer that contains children layers
+            string oldDirectory = currentPath;
+            GameObject oldGroup = currentGroupGameObject;
+
+            currentPath = Path.Combine(currentPath, GetOutputFolderName(layer));
+            Directory.CreateDirectory(currentPath);
+
+            bool createGroupObject =
+                (LayoutInScene || CreatePrefab) &&
+                info.EffectiveVisible &&
+                HasVisibleRuntimeContent(layer);
+
+            if (createGroupObject)
+            {
+                if (UseUnityUI && UseTargetCanvasCoordinates)
+                {
+                    currentGroupGameObject = new GameObject(GetRuntimeObjectName(layer), typeof(RectTransform));
+                    RectTransform groupTransform = currentGroupGameObject.GetComponent<RectTransform>();
+                    if (oldGroup != null)
+                    {
+                        groupTransform.SetParent(oldGroup.transform, false);
+                    }
+
+                    groupTransform.anchorMin = new Vector2(0.5f, 0.5f);
+                    groupTransform.anchorMax = new Vector2(0.5f, 0.5f);
+                    groupTransform.pivot = new Vector2(0.5f, 0.5f);
+                    groupTransform.anchoredPosition = Vector2.zero;
+                }
+                else
+                {
+                    currentGroupGameObject = new GameObject(GetRuntimeObjectName(layer));
+                    if (oldGroup != null)
+                    {
+                        currentGroupGameObject.transform.parent = oldGroup.transform;
+                    }
+                }
+            }
+
+            ExportTree(layer.Children);
+
+            currentPath = oldDirectory;
+            currentGroupGameObject = oldGroup;
         }
 
         /// <summary>
@@ -1684,9 +2464,18 @@
         /// <param name="layer">The art layer to export.</param>
         private static void ExportArtLayer(Layer layer)
         {
+            LayerImportInfo info = GetLayerInfo(layer);
+            if (info == null)
+            {
+                return;
+            }
+
+            bool createRuntimeObject = (LayoutInScene || CreatePrefab) && info.EffectiveVisible;
+            bool exportTextureOnly = ShouldLayerEmitTextureFile(info);
+
             if (!layer.IsTextLayer)
             {
-                if (LayoutInScene || CreatePrefab)
+                if (createRuntimeObject)
                 {
                     // create a sprite from the layer to lay it out in the scene
                     if (!UseUnityUI)
@@ -1698,16 +2487,15 @@
                         CreateUIImage(layer);
                     }
                 }
-                else
+                else if (exportTextureOnly)
                 {
-                    // it is not being laid out in the scene, so simply save out the .png file
-                    CreatePNG(layer);
+                    CreateTextureAssetWithoutGameObject(layer);
                 }
             }
             else
             {
                 // it is a text layer
-                if (LayoutInScene || CreatePrefab)
+                if (createRuntimeObject)
                 {
                     // create text mesh
                     if (!UseUnityUI)
@@ -1719,6 +2507,56 @@
                         CreateUIText(layer);
                     }
                 }
+                else if (exportTextureOnly)
+                {
+                    CreateTextureAssetWithoutGameObject(layer);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Exports only generated assets for a layer subtree without creating runtime objects.
+        /// </summary>
+        /// <param name="layer">Layer to export.</param>
+        private static void ExportLayerTexturesOnly(Layer layer)
+        {
+            LayerImportInfo info = GetLayerInfo(layer);
+            if (info == null)
+            {
+                return;
+            }
+
+            if (info.IsButtonGroup)
+            {
+                foreach (Layer child in layer.Children)
+                {
+                    if (ShouldButtonGroupChildEmitTexture(GetLayerInfo(child)))
+                    {
+                        ExportLayerTexturesOnly(child);
+                    }
+                }
+
+                return;
+            }
+
+            if (DoesLayerCreateOutputDirectory(info))
+            {
+                string oldPath = currentPath;
+                currentPath = Path.Combine(currentPath, GetOutputFolderName(layer));
+                Directory.CreateDirectory(currentPath);
+
+                foreach (Layer child in layer.Children)
+                {
+                    ExportLayerTexturesOnly(child);
+                }
+
+                currentPath = oldPath;
+                return;
+            }
+
+            if (ShouldLayerEmitTextureFile(info) || ShouldButtonGroupChildEmitTexture(info))
+            {
+                CreateTextureAssetWithoutGameObject(layer);
             }
         }
 
@@ -1727,13 +2565,13 @@
         /// </summary>
         /// <param name="layer">The <see cref="Layer"/> to save as a PNG.</param>
         /// <returns>The filepath to the created PNG file.</returns>
-        private static string CreatePNG(Layer layer)
+        private static string CreatePNG(Layer layer, bool allowTextLayer = false)
         {
             string file = string.Empty;
 
-            if (layer.Children.Count == 0 && layer.Rect.width > 0)
+            if (layer.Children.Count == 0 && layer.Rect.width > 0 && layer.Rect.height > 0 && (!layer.IsTextLayer || allowTextLayer))
             {
-                file = Path.Combine(currentPath, layer.Name + ".png");
+                file = Path.Combine(currentPath, GetTextureBaseName(layer) + ".png");
                 if (!ShouldOverwriteExistingGeneratedFile(file))
                 {
                     return file;
@@ -1746,6 +2584,19 @@
             }
 
             return file;
+        }
+
+        /// <summary>
+        /// Exports a texture asset without creating a scene or prefab object.
+        /// </summary>
+        /// <param name="layer">Layer to export.</param>
+        private static void CreateTextureAssetWithoutGameObject(Layer layer)
+        {
+            string file = CreatePNG(layer, true);
+            if (!string.IsNullOrEmpty(file) && (LayoutInScene || CreatePrefab))
+            {
+                ImportSprite(GetRelativePath(file), PsdName);
+            }
         }
 
         /// <summary>
@@ -1771,7 +2622,10 @@
             if (layer.Children.Count == 0 && layer.Rect.width > 0)
             {
                 string file = CreatePNG(layer);
-                sprite = ImportSprite(GetRelativePath(file), packingTag);
+                if (!string.IsNullOrEmpty(file))
+                {
+                    sprite = ImportSprite(GetRelativePath(file), packingTag);
+                }
             }
 
             return sprite;
@@ -1867,7 +2721,7 @@
             float width = layer.Rect.width / PixelsToUnits;
             float height = layer.Rect.height / PixelsToUnits;
 
-            GameObject gameObject = new GameObject(layer.Name);
+            GameObject gameObject = new GameObject(GetRuntimeObjectName(layer));
             gameObject.transform.position = new Vector3(x + (width / 2), y - (height / 2), currentDepth);
             gameObject.transform.parent = currentGroupGameObject.transform;
 
@@ -1914,7 +2768,7 @@
             float width = layer.Rect.width / PixelsToUnits;
             float height = layer.Rect.height / PixelsToUnits;
 
-            GameObject gameObject = new GameObject(layer.Name);
+            GameObject gameObject = new GameObject(GetRuntimeObjectName(layer));
             gameObject.transform.position = new Vector3(x + (width / 2), y - (height / 2), currentDepth);
             gameObject.transform.parent = currentGroupGameObject.transform;
 
@@ -1933,33 +2787,39 @@
         /// <param name="layer">The group <see cref="Layer"/> to use to create the sprite animation.</param>
         private static void CreateAnimation(Layer layer)
         {
-            float fps = 30;
-
-            string[] args = layer.Name.Split(new[] { '|' }, StringSplitOptions.RemoveEmptyEntries);
-
-            foreach (string arg in args)
+            LayerImportInfo info = GetLayerInfo(layer);
+            if (info == null)
             {
-                if (arg.ContainsIgnoreCase("FPS="))
-                {
-                    layer.Name = layer.Name.Replace("|" + arg, string.Empty);
-
-                    string[] fpsArgs = arg.Split(new[] { '=' }, StringSplitOptions.RemoveEmptyEntries);
-                    if (!float.TryParse(fpsArgs[1], out fps))
-                    {
-                        Debug.LogError(string.Format("Unable to parse FPS: \"{0}\"", arg));
-                    }
-                }
+                return;
             }
 
             List<Sprite> frames = new List<Sprite>();
-
-            Layer firstChild = layer.Children.First();
-            SpriteRenderer spriteRenderer = CreateSpriteGameObject(firstChild);
-            spriteRenderer.name = layer.Name;
-
-            foreach (Layer child in layer.Children)
+            List<Layer> visibleFrames = GetVisibleAnimationFrameLayers(layer);
+            if (visibleFrames.Count == 0)
             {
-                frames.Add(CreateSprite(child, layer.Name));
+                return;
+            }
+
+            string animationAssetName = GetOutputFolderName(layer);
+            float fps = info.AnimationFps;
+
+            Layer firstChild = visibleFrames[0];
+            SpriteRenderer spriteRenderer = CreateSpriteGameObject(firstChild);
+            spriteRenderer.name = GetRuntimeObjectName(layer);
+
+            foreach (Layer child in visibleFrames)
+            {
+                Sprite frame = CreateSprite(child, animationAssetName);
+                if (frame != null)
+                {
+                    frames.Add(frame);
+                }
+            }
+
+            if (frames.Count == 0)
+            {
+                UnityEngine.Object.DestroyImmediate(spriteRenderer.gameObject);
+                return;
             }
 
             spriteRenderer.sprite = frames[0];
@@ -1970,24 +2830,52 @@
             controller.AddLayer("Base Layer");
 
             UnityEditor.Animations.AnimatorControllerLayer controllerLayer = controller.layers[0];
-            UnityEditor.Animations.AnimatorState state = controllerLayer.stateMachine.AddState(layer.Name);
-            state.motion = CreateSpriteAnimationClip(layer.Name, frames, fps);
+            UnityEditor.Animations.AnimatorState state = controllerLayer.stateMachine.AddState(animationAssetName);
+            state.motion = CreateSpriteAnimationClip(animationAssetName, frames, fps);
 
-            AssetDatabase.CreateAsset(controller, GetRelativePath(currentPath) + "/" + layer.Name + ".controller");
+            string controllerPath = GetRelativePath(currentPath) + "/" + animationAssetName + ".controller";
+            RuntimeAnimatorController runtimeController = controller;
+            if (PrepareAssetPathForCreate(controllerPath))
+            {
+                AssetDatabase.CreateAsset(controller, controllerPath);
+            }
+            else
+            {
+                RuntimeAnimatorController existingController =
+                    AssetDatabase.LoadAssetAtPath(controllerPath, typeof(RuntimeAnimatorController)) as RuntimeAnimatorController;
+                if (existingController != null)
+                {
+                    runtimeController = existingController;
+                }
+            }
 #else // Unity 4
             // Create Animator Controller with an Animation Clip
             UnityEditor.Animations.AnimatorController controller = new UnityEditor.Animations.AnimatorController();
             UnityEditor.Animations.AnimatorControllerLayer controllerLayer = controller.AddLayer("Base Layer");
 
-            UnityEditor.Animations.AnimatorState state = controllerLayer.stateMachine.AddState(layer.Name);
-            state.SetAnimationClip(CreateSpriteAnimationClip(layer.Name, frames, fps));
+            UnityEditor.Animations.AnimatorState state = controllerLayer.stateMachine.AddState(animationAssetName);
+            state.SetAnimationClip(CreateSpriteAnimationClip(animationAssetName, frames, fps));
 
-            AssetDatabase.CreateAsset(controller, GetRelativePath(currentPath) + "/" + layer.Name + ".controller");
+            string controllerPath = GetRelativePath(currentPath) + "/" + animationAssetName + ".controller";
+            RuntimeAnimatorController runtimeController = controller;
+            if (PrepareAssetPathForCreate(controllerPath))
+            {
+                AssetDatabase.CreateAsset(controller, controllerPath);
+            }
+            else
+            {
+                RuntimeAnimatorController existingController =
+                    AssetDatabase.LoadAssetAtPath(controllerPath, typeof(RuntimeAnimatorController)) as RuntimeAnimatorController;
+                if (existingController != null)
+                {
+                    runtimeController = existingController;
+                }
+            }
 #endif
 
             // Add an Animator and assign it the controller
             Animator animator = spriteRenderer.gameObject.AddComponent<Animator>();
-            animator.runtimeAnimatorController = controller;
+            animator.runtimeAnimatorController = runtimeController;
         }
 
         /// <summary>
@@ -2036,7 +2924,18 @@
             clip.ValidateIfRetargetable(true);
 #endif
 
-            AssetDatabase.CreateAsset(clip, GetRelativePath(currentPath) + "/" + name + ".anim");
+            string clipPath = GetRelativePath(currentPath) + "/" + name + ".anim";
+            if (PrepareAssetPathForCreate(clipPath))
+            {
+                AssetDatabase.CreateAsset(clip, clipPath);
+                return clip;
+            }
+
+            AnimationClip existingClip = AssetDatabase.LoadAssetAtPath(clipPath, typeof(AnimationClip)) as AnimationClip;
+            if (existingClip != null)
+            {
+                return existingClip;
+            }
 
             return clip;
         }
@@ -2091,7 +2990,7 @@
                 float uiWidthPixels = scaledSize.x;
                 float uiHeightPixels = scaledSize.y;
 
-                GameObject uiObject = new GameObject(layer.Name, typeof(RectTransform));
+                GameObject uiObject = new GameObject(GetRuntimeObjectName(layer), typeof(RectTransform));
                 uiObject.transform.SetParent(currentGroupGameObject.transform, false);
 
                 RectTransform uiTransform = uiObject.GetComponent<RectTransform>();
@@ -2119,7 +3018,7 @@
             float width = layer.Rect.width / PixelsToUnits;
             float height = layer.Rect.height / PixelsToUnits;
 
-            GameObject gameObject = new GameObject(layer.Name);
+            GameObject gameObject = new GameObject(GetRuntimeObjectName(layer));
             gameObject.transform.position = new Vector3(x + (width / 2), y - (height / 2), currentDepth);
             gameObject.transform.parent = currentGroupGameObject.transform;
 
@@ -2151,7 +3050,7 @@
                 float uiWidthPixels = scaledSize.x;
                 float uiHeightPixels = scaledSize.y;
 
-                GameObject uiObject = new GameObject(layer.Name, typeof(RectTransform));
+                GameObject uiObject = new GameObject(GetRuntimeObjectName(layer), typeof(RectTransform));
                 uiObject.transform.SetParent(currentGroupGameObject.transform, false);
 
                 RectTransform uiTransform = uiObject.GetComponent<RectTransform>();
@@ -2215,7 +3114,7 @@
             float width = layer.Rect.width / PixelsToUnits;
             float height = layer.Rect.height / PixelsToUnits;
 
-            GameObject gameObject = new GameObject(layer.Name);
+            GameObject gameObject = new GameObject(GetRuntimeObjectName(layer));
             gameObject.transform.position = new Vector3(x + (width / 2), y - (height / 2), currentDepth);
             gameObject.transform.parent = currentGroupGameObject.transform;
 
@@ -2283,42 +3182,38 @@
             // look through the children for the sprite states
             foreach (Layer child in layer.Children)
             {
-                if (child.Name.ContainsIgnoreCase("|Disabled"))
+                LayerImportInfo childInfo = GetLayerInfo(child);
+                if (childInfo == null || !childInfo.EffectiveVisible)
                 {
-                    child.Name = child.Name.ReplaceIgnoreCase("|Disabled", string.Empty);
+                    continue;
+                }
+
+                if (childInfo.ButtonRole == ButtonChildRole.Disabled)
+                {
                     button.transition = Selectable.Transition.SpriteSwap;
 
                     SpriteState spriteState = button.spriteState;
                     spriteState.disabledSprite = CreateSprite(child);
                     button.spriteState = spriteState;
                 }
-                else if (child.Name.ContainsIgnoreCase("|Highlighted"))
+                else if (childInfo.ButtonRole == ButtonChildRole.Highlighted)
                 {
-                    child.Name = child.Name.ReplaceIgnoreCase("|Highlighted", string.Empty);
                     button.transition = Selectable.Transition.SpriteSwap;
 
                     SpriteState spriteState = button.spriteState;
                     spriteState.highlightedSprite = CreateSprite(child);
                     button.spriteState = spriteState;
                 }
-                else if (child.Name.ContainsIgnoreCase("|Pressed"))
+                else if (childInfo.ButtonRole == ButtonChildRole.Pressed)
                 {
-                    child.Name = child.Name.ReplaceIgnoreCase("|Pressed", string.Empty);
                     button.transition = Selectable.Transition.SpriteSwap;
 
                     SpriteState spriteState = button.spriteState;
                     spriteState.pressedSprite = CreateSprite(child);
                     button.spriteState = spriteState;
                 }
-                else if (child.Name.ContainsIgnoreCase("|Default") ||
-                         child.Name.ContainsIgnoreCase("|Enabled") ||
-                         child.Name.ContainsIgnoreCase("|Normal") ||
-                         child.Name.ContainsIgnoreCase("|Up"))
+                else if (childInfo.ButtonRole == ButtonChildRole.Default)
                 {
-                    child.Name = child.Name.ReplaceIgnoreCase("|Default", string.Empty);
-                    child.Name = child.Name.ReplaceIgnoreCase("|Enabled", string.Empty);
-                    child.Name = child.Name.ReplaceIgnoreCase("|Normal", string.Empty);
-                    child.Name = child.Name.ReplaceIgnoreCase("|Up", string.Empty);
 
                     image.sprite = CreateSprite(child);
 
@@ -2355,10 +3250,8 @@
 
                     button.targetGraphic = image;
                 }
-                else if (child.Name.ContainsIgnoreCase("|Text") && !child.IsTextLayer)
+                else if (childInfo.ButtonRole == ButtonChildRole.TextImage)
                 {
-                    child.Name = child.Name.ReplaceIgnoreCase("|Text", string.Empty);
-
                     GameObject oldGroupObject = currentGroupGameObject;
                     currentGroupGameObject = button.gameObject;
 
