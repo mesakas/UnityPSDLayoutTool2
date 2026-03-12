@@ -94,6 +94,7 @@ This project is explicitly based on the original `UnityPSDLayoutTool` and adds c
 - 在 Photoshop 中隐藏的图层，包括被父文件夹隐藏的子图层，现在默认只导出贴图资源，不会生成场景对象，也不会进入 Prefab 结构。
 - 隐藏的文本层也会按栅格化结果导出为贴图资源。
 - 同一父级下如果存在同名图层或同名文件夹，导入时会自动追加稳定后缀，例如 `_2`、`_3`。
+- 如果图层或文件夹名称包含文件系统非法字符（如 `\\ / : * ? \" < > |`），导出时会自动替换为安全名称。
 - 这个唯一命名规则会参与重复导入时的更新/删除匹配；只要父级结构和同名项相对顺序不变，旧资源路径就会稳定复用。
 
 #### 命名锚点与图片保比例
@@ -253,6 +254,7 @@ Actions:
 - Layers hidden in Photoshop, including layers hidden by a parent folder, now export only texture assets by default. They do not create scene objects and are not included in generated prefabs.
 - Hidden text layers are also rasterized and exported as texture assets.
 - When sibling layers or folders share the same name, the importer adds stable suffixes such as `_2`, `_3` to keep generated assets unique.
+- If a layer or folder name contains filesystem-illegal characters such as `\\ / : * ? \" < > |`, the importer replaces them automatically with safe names.
 - The same stable naming is used by re-import conflict matching, so existing generated files continue to match as long as the parent structure and relative order of same-name siblings stay the same.
 
 ### Name-Based Anchors And Image Aspect

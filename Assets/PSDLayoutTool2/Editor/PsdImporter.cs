@@ -113,6 +113,41 @@
         private static Dictionary<Layer, LayerImportInfo> currentLayerInfos;
 
         /// <summary>
+        /// Cached set of invalid filesystem characters for generated file and folder names.
+        /// </summary>
+        private static readonly HashSet<char> InvalidGeneratedNameChars = new HashSet<char>(
+            Path.GetInvalidFileNameChars().Concat(new[] { '<', '>', ':', '"', '/', '\\', '|', '?', '*' }));
+
+        /// <summary>
+        /// Reserved DOS device names that cannot be used as generated file or folder names on Windows.
+        /// </summary>
+        private static readonly HashSet<string> ReservedGeneratedNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "CON",
+            "PRN",
+            "AUX",
+            "NUL",
+            "COM1",
+            "COM2",
+            "COM3",
+            "COM4",
+            "COM5",
+            "COM6",
+            "COM7",
+            "COM8",
+            "COM9",
+            "LPT1",
+            "LPT2",
+            "LPT3",
+            "LPT4",
+            "LPT5",
+            "LPT6",
+            "LPT7",
+            "LPT8",
+            "LPT9"
+        };
+
+        /// <summary>
         /// Represents how a button-group child should be interpreted.
         /// </summary>
         private enum ButtonChildRole
@@ -237,6 +272,16 @@
             /// Gets or sets the explicitly parsed anchor preset from the source layer name before inheritance.
             /// </summary>
             public AnchorNamePreset ExplicitAnchorPreset { get; set; }
+
+            /// <summary>
+            /// Gets or sets the resolved layout rect used for UI placement.
+            /// </summary>
+            public Rect LayoutRect { get; set; }
+
+            /// <summary>
+            /// Gets or sets a value indicating whether <see cref="LayoutRect"/> contains a usable rect.
+            /// </summary>
+            public bool HasLayoutRect { get; set; }
         }
 
         /// <summary>
@@ -1090,6 +1135,90 @@
             {
                 CreateLayerImportInfo(child, info, info.EffectiveVisible, infoMap);
             }
+
+            Rect layoutRect;
+            info.HasLayoutRect = TryResolveLayerLayoutRect(info, infoMap, out layoutRect);
+            info.LayoutRect = layoutRect;
+        }
+
+        /// <summary>
+        /// Resolves the effective layout rect used to place one layer in Unity UI.
+        /// </summary>
+        /// <param name="info">Layer metadata.</param>
+        /// <param name="infoMap">Layer metadata map.</param>
+        /// <param name="layoutRect">Resolved rect when available.</param>
+        /// <returns>True when a valid layout rect exists.</returns>
+        private static bool TryResolveLayerLayoutRect(
+            LayerImportInfo info,
+            Dictionary<Layer, LayerImportInfo> infoMap,
+            out Rect layoutRect)
+        {
+            layoutRect = default(Rect);
+            if (info == null || info.Layer == null)
+            {
+                return false;
+            }
+
+            if (!info.IsFolderLike)
+            {
+                if (info.Layer.Rect.width > 0f && info.Layer.Rect.height > 0f)
+                {
+                    layoutRect = info.Layer.Rect;
+                    return true;
+                }
+
+                return false;
+            }
+
+            bool hasBounds = false;
+            Rect combinedRect = default(Rect);
+            foreach (Layer child in info.Layer.Children)
+            {
+                LayerImportInfo childInfo;
+                if (!infoMap.TryGetValue(child, out childInfo) || childInfo == null || !childInfo.EffectiveVisible || !childInfo.HasLayoutRect)
+                {
+                    continue;
+                }
+
+                if (!hasBounds)
+                {
+                    combinedRect = childInfo.LayoutRect;
+                    hasBounds = true;
+                }
+                else
+                {
+                    combinedRect = CombineRects(combinedRect, childInfo.LayoutRect);
+                }
+            }
+
+            if (hasBounds)
+            {
+                layoutRect = combinedRect;
+                return true;
+            }
+
+            if (info.Layer.Rect.width > 0f && info.Layer.Rect.height > 0f)
+            {
+                layoutRect = info.Layer.Rect;
+                return true;
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// Combines two rects into one bounding rect.
+        /// </summary>
+        /// <param name="first">First rect.</param>
+        /// <param name="second">Second rect.</param>
+        /// <returns>Bounding rect containing both inputs.</returns>
+        private static Rect CombineRects(Rect first, Rect second)
+        {
+            float xMin = Mathf.Min(first.xMin, second.xMin);
+            float yMin = Mathf.Min(first.yMin, second.yMin);
+            float xMax = Mathf.Max(first.xMax, second.xMax);
+            float yMax = Mathf.Max(first.yMax, second.yMax);
+            return Rect.MinMaxRect(xMin, yMin, xMax, yMax);
         }
 
         /// <summary>
@@ -1570,7 +1699,30 @@
         /// <returns>Sanitized name.</returns>
         private static string MakeNameSafeSilently(string name)
         {
-            return string.IsNullOrEmpty(name) ? string.Empty : Regex.Replace(name, "[/:&.<>,$¢;+]", "_");
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                return string.Empty;
+            }
+
+            string trimmedName = name.Trim();
+            StringBuilder builder = new StringBuilder(trimmedName.Length);
+            foreach (char currentChar in trimmedName)
+            {
+                builder.Append(InvalidGeneratedNameChars.Contains(currentChar) || char.IsControl(currentChar) ? '_' : currentChar);
+            }
+
+            string sanitized = builder.ToString().Trim().TrimEnd('.');
+            while (sanitized.EndsWith(" ", StringComparison.Ordinal))
+            {
+                sanitized = sanitized.Substring(0, sanitized.Length - 1);
+            }
+
+            if (ReservedGeneratedNames.Contains(sanitized))
+            {
+                sanitized += "_";
+            }
+
+            return sanitized;
         }
 
         /// <summary>
@@ -1788,7 +1940,7 @@
         {
             LayerImportInfo info = GetLayerInfo(layer);
             return info != null && !string.IsNullOrEmpty(info.UniqueSelfName)
-                ? info.UniqueSelfName
+                ? SanitizeStableName(info.UniqueSelfName, "Folder")
                 : MakeNameSafe(layer.Name);
         }
 
@@ -1802,12 +1954,12 @@
             LayerImportInfo info = GetLayerInfo(layer);
             if (info != null && !string.IsNullOrEmpty(info.UniqueTextureName))
             {
-                return info.UniqueTextureName;
+                return SanitizeStableName(info.UniqueTextureName, layer != null && layer.IsTextLayer ? "Text" : "Layer");
             }
 
             if (info != null && !string.IsNullOrEmpty(info.UniqueSelfName))
             {
-                return info.UniqueSelfName;
+                return SanitizeStableName(info.UniqueSelfName, layer != null && layer.IsTextLayer ? "Text" : "Layer");
             }
 
             return MakeNameSafe(layer.Name);
@@ -2420,9 +2572,7 @@
         /// <returns>The fixed layer name</returns>
         private static string MakeNameSafe(string name)
         {
-            // replace all special characters with an underscore
-            Regex pattern = new Regex("[/:&.<>,$¢;+]");
-            string newName = pattern.Replace(name, "_");
+            string newName = MakeNameSafeSilently(name);
 
             if (name != newName)
             {
@@ -3289,7 +3439,7 @@
             // create an empty Image object with a Button behavior attached
             Image image = CreateUIImage(layer);
             Button button = image.gameObject.AddComponent<Button>();
-            UiLayoutContext buttonLayoutContext = GetChildUILayoutContext(layer, buttonPreset);
+            UiLayoutContext buttonLayoutContext = GetChildUILayoutContext(layer, buttonPreset, GetLayerLayoutRect(layer));
 
             // look through the children for a clip rect
             ////Rectangle? clipRect = null;
@@ -3399,8 +3549,9 @@
         /// <returns>Resolved child layout context.</returns>
         private static UiLayoutContext ApplyLayerUILayout(RectTransform transform, Layer layer, AnchorNamePreset preset)
         {
+            Rect layoutRect = GetLayerLayoutRect(layer);
             AnchorNamePreset effectivePreset = NormalizePointAnchorPreset(preset);
-            UiLayoutContext childContext = GetChildUILayoutContext(layer, preset);
+            UiLayoutContext childContext = GetChildUILayoutContext(layer, preset, layoutRect);
 
             if (IsGlobalAnchorPreset(preset))
             {
@@ -3412,7 +3563,7 @@
             transform.anchorMin = anchor;
             transform.anchorMax = anchor;
             transform.pivot = anchor;
-            transform.anchoredPosition = GetAnchoredPositionForLayer(layer.Rect, currentGroupLayoutContext, effectivePreset);
+            transform.anchoredPosition = GetAnchoredPositionForLayer(layoutRect, currentGroupLayoutContext, effectivePreset);
             transform.sizeDelta = childContext.LocalRectSize;
             return childContext;
         }
@@ -3438,17 +3589,17 @@
         /// <param name="layer">Source PSD layer.</param>
         /// <param name="preset">Resolved anchor preset.</param>
         /// <returns>Layout context for the layer's children.</returns>
-        private static UiLayoutContext GetChildUILayoutContext(Layer layer, AnchorNamePreset preset)
+        private static UiLayoutContext GetChildUILayoutContext(Layer layer, AnchorNamePreset preset, Rect layoutRect)
         {
             if (IsGlobalAnchorPreset(preset))
             {
                 return currentGroupLayoutContext;
             }
 
-            Vector2 childSize = GetUiLayerSize(layer.Rect);
+            Vector2 childSize = GetUiLayerSize(layoutRect);
             return new UiLayoutContext
             {
-                PsdReferenceRect = layer.Rect,
+                PsdReferenceRect = layoutRect,
                 LocalRectSize = childSize,
                 LocalDisplayRect = GetCenteredRect(childSize)
             };
@@ -3623,6 +3774,22 @@
             }
 
             return layer.FontSize / PixelsToUnits;
+        }
+
+        /// <summary>
+        /// Gets the effective layout rect for a layer, falling back to the raw PSD rect when needed.
+        /// </summary>
+        /// <param name="layer">Source PSD layer.</param>
+        /// <returns>Resolved layout rect.</returns>
+        private static Rect GetLayerLayoutRect(Layer layer)
+        {
+            LayerImportInfo info = GetLayerInfo(layer);
+            if (info != null && info.HasLayoutRect)
+            {
+                return info.LayoutRect;
+            }
+
+            return layer != null ? layer.Rect : default(Rect);
         }
 
         /// <summary>
