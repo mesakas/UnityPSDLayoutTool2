@@ -33,7 +33,8 @@ This project is explicitly based on the original `UnityPSDLayoutTool` and adds c
    - 正确叠加 PSD 图层 Opacity 与蒙版 Alpha
    - 文本对象同样会应用图层透明度
 10. 支持 Inspector 中英文切换（可持久化保存）。
-11. 本分支重命名：
+11. 增加诊断日志：每次导出/布局/生成 Prefab 会写入步骤日志，便于定位卡在哪个阶段或图层。
+12. 本分支重命名：
    - 插件目录：`Assets/PSDLayoutTool2`
    - 命名空间：`PsdLayoutTool2`
 
@@ -71,6 +72,16 @@ This project is explicitly based on the original `UnityPSDLayoutTool` and adds c
 - `导出图层为纹理`
 - `在当前场景中布局`
 - `生成预制体`
+- `打开日志目录`
+- `定位最新日志`
+
+#### 诊断日志
+
+- 每次执行 `导出图层为纹理`、`在当前场景中布局` 或 `生成预制体` 时，插件会写入一份诊断日志。
+- 日志位置：`<Unity 项目根目录>/Library/PSDLayoutTool2/Logs`。
+- 可在 PSD Inspector 中点击 `打开日志目录` / `定位最新日志`，也可以通过顶部菜单 `Tools > PSD Layout Tool 2` 打开。
+- 日志会记录 PSD 读取、输出目录、冲突处理、图层导出、PNG 写入、Unity `ImportAsset`、Prefab 保存和异常堆栈。
+- 默认只保留最近 50 个日志文件，避免长期堆积。
 
 #### Canvas 对齐模式（UI）
 
@@ -193,7 +204,8 @@ The following changes were added on top of the original `UnityPSDLayoutTool`:
    - correctly composes PSD layer opacity with mask alpha
    - text objects also apply layer opacity
 10. Added inspector language switch (Chinese / English), persisted in EditorPrefs.
-11. Renamed plugin folder and namespace for this fork:
+11. Added diagnostic logs for each export/layout/prefab run to locate the failing stage or layer.
+12. Renamed plugin folder and namespace for this fork:
    - Folder: `Assets/PSDLayoutTool2`
    - Namespace: `PsdLayoutTool2`
 
@@ -231,6 +243,16 @@ Actions:
 - `Export Layers As Textures`
 - `Layout In Current Scene`
 - `Generate Prefab`
+- `Open Log Folder`
+- `Reveal Latest Log`
+
+### Diagnostic Logs
+
+- Each `Export Layers As Textures`, `Layout In Current Scene`, or `Generate Prefab` run writes a diagnostic log.
+- Log folder: `<Unity project root>/Library/PSDLayoutTool2/Logs`.
+- Open logs from the PSD Inspector buttons or from `Tools > PSD Layout Tool 2`.
+- Logs include PSD loading, output paths, conflict handling, layer export, PNG writing, Unity `ImportAsset`, prefab saving, and exception stack traces.
+- The logger keeps the latest 50 log files by default.
 
 ### Canvas Alignment Mode (UI)
 

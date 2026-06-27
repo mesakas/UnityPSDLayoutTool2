@@ -430,6 +430,25 @@
         }
 
         /// <summary>
+        /// Gets a readable label for the active import mode.
+        /// </summary>
+        /// <returns>Import mode label.</returns>
+        private static string GetImportModeName()
+        {
+            if (CreatePrefab)
+            {
+                return UseUnityUI ? "Generate Prefab (Unity UI)" : "Generate Prefab (Scene Objects)";
+            }
+
+            if (LayoutInScene)
+            {
+                return UseUnityUI ? "Layout In Current Scene (Unity UI)" : "Layout In Current Scene (Scene Objects)";
+            }
+
+            return "Export Layers As Textures";
+        }
+
+        /// <summary>
         /// Imports a Photoshop document (.psd) file at the given path.
         /// </summary>
         /// <param name="asset">The path of to the .psd file relative to the project.</param>
@@ -446,89 +465,124 @@
         /// <param name="skipConflictPrompt">True to bypass conflict prompts and apply <paramref name="forcedSelection"/> directly.</param>
         private static void Import(string asset, ImportConflictSelection forcedSelection, bool skipConflictPrompt)
         {
-            currentDepth = MaximumDepth;
-            currentSortingOrder = 0;
-            UseTargetCanvasCoordinates = false;
-            currentLayerInfos = null;
-            string normalizedAssetPath = asset.Replace('\\', '/');
-            string fullPath = Path.Combine(GetFullProjectPath(), normalizedAssetPath);
-
-            PsdFile psd = new PsdFile(fullPath);
-            CanvasSize = new Vector2(psd.Width, psd.Height);
-            TargetCanvasSize = CanvasSize;
-
-            // Set the depth step based on the layer count.  If there are no layers, default to 0.1f.
-            depthStep = psd.Layers.Count != 0 ? MaximumDepth / psd.Layers.Count : 0.1f;
-
-            PsdName = Path.GetFileNameWithoutExtension(normalizedAssetPath);
-
-            string outputRelativePath = GetOutputRootRelativePath(normalizedAssetPath);
-            string outputFullPath = Path.Combine(GetFullProjectPath(), outputRelativePath.Replace('/', Path.DirectorySeparatorChar));
-            string prefabRelativePath = CreatePrefab ? GetPrefabRelativePath(outputRelativePath) : string.Empty;
-
-            List<Layer> tree = BuildLayerTree(psd.Layers) ?? new List<Layer>();
-            currentLayerInfos = BuildLayerImportInfoMap(tree);
-            bool hasVisibleRuntimeObjects = HasVisibleRuntimeContent(tree);
-            ImportConflictAnalysis conflictAnalysis = AnalyzeImportConflicts(
-                tree,
-                outputRelativePath,
-                outputFullPath,
-                prefabRelativePath,
-                hasVisibleRuntimeObjects);
-
-            ImportConflictSelection effectiveSelection = forcedSelection;
-            if (!skipConflictPrompt && conflictAnalysis.HasExistingTargets)
+            PsdLogger.BeginImportSession(asset, GetImportModeName(), skipConflictPrompt);
+            string sessionResult = "Completed";
+            try
             {
-                bool updateExistingFiles = PromptForUpdatingExistingFiles(conflictAnalysis);
-                if (!updateExistingFiles)
+                PsdLogger.Step("Initialize import state");
+                currentDepth = MaximumDepth;
+                currentSortingOrder = 0;
+                UseTargetCanvasCoordinates = false;
+                currentLayerInfos = null;
+                string normalizedAssetPath = asset.Replace('\\', '/');
+                string fullPath = Path.Combine(GetFullProjectPath(), normalizedAssetPath);
+
+                PsdLogger.Step("Read PSD file: " + fullPath);
+                PsdFile psd = new PsdFile(fullPath);
+                CanvasSize = new Vector2(psd.Width, psd.Height);
+                TargetCanvasSize = CanvasSize;
+                PsdLogger.Info("PSD loaded. Size=" + psd.Width + "x" + psd.Height + ", layers=" + psd.Layers.Count);
+
+                // Set the depth step based on the layer count.  If there are no layers, default to 0.1f.
+                depthStep = psd.Layers.Count != 0 ? MaximumDepth / psd.Layers.Count : 0.1f;
+
+                PsdName = Path.GetFileNameWithoutExtension(normalizedAssetPath);
+
+                string outputRelativePath = GetOutputRootRelativePath(normalizedAssetPath);
+                string outputFullPath = Path.Combine(GetFullProjectPath(), outputRelativePath.Replace('/', Path.DirectorySeparatorChar));
+                string prefabRelativePath = CreatePrefab ? GetPrefabRelativePath(outputRelativePath) : string.Empty;
+                PsdLogger.Info("Output relative path: " + outputRelativePath);
+                PsdLogger.Info("Output full path: " + outputFullPath);
+                if (!string.IsNullOrEmpty(prefabRelativePath))
                 {
-                    currentLayerInfos = null;
-                    return;
+                    PsdLogger.Info("Prefab path: " + prefabRelativePath);
                 }
 
-                if (conflictAnalysis.HasSelectableEntries)
+                PsdLogger.Step("Build layer tree");
+                List<Layer> tree = BuildLayerTree(psd.Layers) ?? new List<Layer>();
+                currentLayerInfos = BuildLayerImportInfoMap(tree);
+                bool hasVisibleRuntimeObjects = HasVisibleRuntimeContent(tree);
+                PsdLogger.Info("Layer tree root count=" + tree.Count + ", hasVisibleRuntimeObjects=" + hasVisibleRuntimeObjects);
+
+                PsdLogger.Step("Analyze existing generated targets");
+                ImportConflictAnalysis conflictAnalysis = AnalyzeImportConflicts(
+                    tree,
+                    outputRelativePath,
+                    outputFullPath,
+                    prefabRelativePath,
+                    hasVisibleRuntimeObjects);
+                PsdLogger.Info(
+                    "Conflict analysis: hasExistingTargets=" + conflictAnalysis.HasExistingTargets +
+                    ", sameName=" + conflictAnalysis.SameNamePaths.Count +
+                    ", stale=" + conflictAnalysis.DeletedPaths.Count +
+                    ", hasSelectableEntries=" + conflictAnalysis.HasSelectableEntries);
+
+                ImportConflictSelection effectiveSelection = forcedSelection;
+                if (!skipConflictPrompt && conflictAnalysis.HasExistingTargets)
                 {
-                    if (isConflictSelectionDialogOpen)
+                    PsdLogger.Step("Prompt user to update existing targets");
+                    bool updateExistingFiles = PromptForUpdatingExistingFiles(conflictAnalysis);
+                    PsdLogger.Info("Update existing targets answer: " + updateExistingFiles);
+                    if (!updateExistingFiles)
                     {
-                        EditorUtility.DisplayDialog(
-                            "PSDLayoutTool2",
-                            "已有一个更新/删除确认窗口正在打开，请先完成该操作。",
-                            "确定");
+                        sessionResult = "Canceled by user at existing-target prompt";
                         currentLayerInfos = null;
                         return;
                     }
 
-                    isConflictSelectionDialogOpen = true;
-                    ImportConflictSelection defaultSelection = CreateDefaultConflictSelection(conflictAnalysis);
-                    ImportConflictSelectionWindow.ShowDialog(
-                        conflictAnalysis,
-                        defaultSelection,
-                        selection =>
+                    if (conflictAnalysis.HasSelectableEntries)
+                    {
+                        if (isConflictSelectionDialogOpen)
                         {
-                            isConflictSelectionDialogOpen = false;
-                            if (selection == null || !selection.Confirmed)
-                            {
-                                return;
-                            }
+                            PsdLogger.Warning("Skipped import because a conflict selection window is already open.");
+                            EditorUtility.DisplayDialog(
+                                "PSDLayoutTool2",
+                                "已有一个更新/删除确认窗口正在打开，请先完成该操作。",
+                                "确定");
+                            sessionResult = "Skipped because conflict selection window is already open";
+                            currentLayerInfos = null;
+                            return;
+                        }
 
-                            Import(asset, selection, true);
-                        });
-                    currentLayerInfos = null;
-                    return;
+                        isConflictSelectionDialogOpen = true;
+                        ImportConflictSelection defaultSelection = CreateDefaultConflictSelection(conflictAnalysis);
+                        PsdLogger.Step("Open conflict selection window");
+                        ImportConflictSelectionWindow.ShowDialog(
+                            conflictAnalysis,
+                            defaultSelection,
+                            selection =>
+                            {
+                                isConflictSelectionDialogOpen = false;
+                                if (selection == null || !selection.Confirmed)
+                                {
+                                    return;
+                                }
+
+                                Import(asset, selection, true);
+                            });
+                        sessionResult = "Waiting for conflict selection";
+                        currentLayerInfos = null;
+                        return;
+                    }
+
+                    effectiveSelection = CreateDefaultConflictSelection(conflictAnalysis);
                 }
 
-                effectiveSelection = CreateDefaultConflictSelection(conflictAnalysis);
-            }
+                ConfigureCurrentImportSelection(effectiveSelection);
+                if (effectiveSelection != null)
+                {
+                    PsdLogger.Info(
+                        "Effective conflict selection: update=" + effectiveSelection.PathsToUpdate.Count +
+                        ", delete=" + effectiveSelection.PathsToDelete.Count);
+                }
 
-            ConfigureCurrentImportSelection(effectiveSelection);
-
-            try
-            {
                 currentPath = outputFullPath;
+                PsdLogger.Step("Create output directory: " + currentPath);
                 Directory.CreateDirectory(currentPath);
 
                 if (effectiveSelection != null)
                 {
+                    PsdLogger.Step("Delete selected stale files: " + effectiveSelection.PathsToDelete.Count);
                     DeleteSelectedFiles(effectiveSelection.PathsToDelete, outputFullPath, conflictAnalysis.PrefabFullPath);
                 }
 
@@ -541,12 +595,14 @@
                 {
                     if (UseUnityUI)
                     {
+                        PsdLogger.Step("Create or resolve Unity UI root");
                         CreateUIEventSystem();
                         Canvas targetCanvas = ResolveTargetCanvas();
                         if (targetCanvas != null)
                         {
                             UseTargetCanvasCoordinates = true;
                             TargetCanvasSize = GetTargetCanvasRectSize(targetCanvas);
+                            PsdLogger.Info("Using target canvas: " + GetHierarchyPath(targetCanvas.transform) + ", size=" + TargetCanvasSize);
                             rootPsdGameObject = new GameObject(PsdName, typeof(RectTransform));
                             RectTransform rootRect = rootPsdGameObject.GetComponent<RectTransform>();
                             rootRect.SetParent(targetCanvas.transform, false);
@@ -555,6 +611,7 @@
                         }
                         else
                         {
+                            PsdLogger.Info("No target canvas found. Creating a dedicated UI canvas.");
                             CreateUICanvas();
                             rootPsdGameObject = new GameObject(PsdName, typeof(RectTransform));
                             RectTransform rootRect = rootPsdGameObject.GetComponent<RectTransform>();
@@ -565,6 +622,7 @@
                     }
                     else
                     {
+                        PsdLogger.Step("Create scene root object: " + PsdName);
                         rootPsdGameObject = new GameObject(PsdName);
                         importRootGameObject = rootPsdGameObject;
                     }
@@ -572,13 +630,19 @@
                     currentGroupGameObject = rootPsdGameObject;
                 }
 
+                PsdLogger.Step("Export layer tree");
                 ExportTree(tree);
 
                 if (CreatePrefab && importRootGameObject != null)
                 {
                     if (ShouldSavePrefab(prefabRelativePath))
                     {
+                        PsdLogger.Step("Save prefab: " + prefabRelativePath);
                         PrefabUtility.SaveAsPrefabAsset(importRootGameObject, prefabRelativePath);
+                    }
+                    else
+                    {
+                        PsdLogger.Info("Skip prefab save because overwrite selection does not allow it: " + prefabRelativePath);
                     }
 
                     if (!LayoutInScene && importRootGameObject != null)
@@ -588,12 +652,20 @@
                     }
                 }
 
+                PsdLogger.Step("Refresh AssetDatabase");
                 AssetDatabase.Refresh();
+            }
+            catch (Exception exception)
+            {
+                sessionResult = "Failed";
+                PsdLogger.Exception("Import failed while processing asset: " + asset, exception);
+                throw;
             }
             finally
             {
                 ClearCurrentImportSelection();
                 currentLayerInfos = null;
+                PsdLogger.EndImportSession(sessionResult);
             }
         }
 
@@ -781,9 +853,11 @@
                 if (!IsPathInsideDirectory(normalizedPath, normalizedRoot) &&
                     !string.Equals(normalizedPath, normalizedPrefabPath, StringComparison.OrdinalIgnoreCase))
                 {
+                    PsdLogger.Warning("Skip deleting path outside generated targets: " + normalizedPath);
                     continue;
                 }
 
+                PsdLogger.Info("Delete generated file: " + normalizedPath);
                 DeleteFileWithMeta(normalizedPath);
             }
 
@@ -810,8 +884,14 @@
                 return true;
             }
 
-            return selectedUpdatePathsForCurrentImport != null &&
-                   selectedUpdatePathsForCurrentImport.Contains(NormalizePath(filePath));
+            bool canOverwrite = selectedUpdatePathsForCurrentImport != null &&
+                selectedUpdatePathsForCurrentImport.Contains(NormalizePath(filePath));
+            if (!canOverwrite)
+            {
+                PsdLogger.Info("Skip existing generated file because it was not selected for update: " + filePath);
+            }
+
+            return canOverwrite;
         }
 
         /// <summary>
@@ -830,6 +910,7 @@
 
             if (File.Exists(assetFullPath))
             {
+                PsdLogger.Info("Delete existing asset before recreating it: " + assetRelativePath);
                 if (!AssetDatabase.DeleteAsset(assetRelativePath))
                 {
                     DeleteFileWithMeta(assetFullPath);
@@ -2631,6 +2712,28 @@
             return fullPath.Replace(GetFullProjectPath(), string.Empty).Replace('\\', '/');
         }
 
+        /// <summary>
+        /// Builds a compact layer description for diagnostic logs.
+        /// </summary>
+        /// <param name="layer">Layer to describe.</param>
+        /// <returns>Readable layer description.</returns>
+        private static string DescribeLayerForLog(Layer layer)
+        {
+            if (layer == null)
+            {
+                return "<null layer>";
+            }
+
+            string name = string.IsNullOrEmpty(layer.Name) ? "<unnamed>" : layer.Name.Replace('\r', ' ').Replace('\n', ' ');
+            Rect rect = layer.Rect;
+            return "\"" + name + "\"" +
+                " rect=(" + rect.x + "," + rect.y + "," + rect.width + "x" + rect.height + ")" +
+                " children=" + layer.Children.Count +
+                " text=" + layer.IsTextLayer +
+                " visible=" + layer.Visible +
+                " opacity=" + layer.Opacity;
+        }
+
         #region Layer Exporting Methods
 
         /// <summary>
@@ -2652,9 +2755,11 @@
         /// <param name="layer">The layer to export.</param>
         private static void ExportLayer(Layer layer)
         {
+            PsdLogger.Step("Export layer: " + DescribeLayerForLog(layer));
             LayerImportInfo info = GetLayerInfo(layer);
             if (info == null)
             {
+                PsdLogger.Warning("Skip layer because no import info was found: " + DescribeLayerForLog(layer));
                 return;
             }
 
@@ -2682,6 +2787,7 @@
 
             if (info.IsButtonGroup)
             {
+                PsdLogger.Info("Process button group: " + DescribeLayerForLog(layer));
                 bool createRuntimeButton =
                     (LayoutInScene || CreatePrefab) &&
                     UseUnityUI &&
@@ -2714,6 +2820,7 @@
 
             if (info.IsAnimationGroup)
             {
+                PsdLogger.Info("Process animation group: " + DescribeLayerForLog(layer));
                 string oldPath = currentPath;
                 GameObject oldGroupObject = currentGroupGameObject;
                 List<Layer> visibleFrames = GetVisibleAnimationFrameLayers(layer);
@@ -2724,6 +2831,7 @@
                     visibleFrames.Count > 0;
 
                 currentPath = Path.Combine(currentPath, GetOutputFolderName(layer));
+                PsdLogger.Info("Create animation output directory: " + currentPath);
                 Directory.CreateDirectory(currentPath);
 
                 if (createRuntimeAnimation)
@@ -2753,6 +2861,7 @@
             UiLayoutContext oldLayoutContext = currentGroupLayoutContext;
 
             currentPath = Path.Combine(currentPath, GetOutputFolderName(layer));
+            PsdLogger.Info("Create folder output directory: " + currentPath);
             Directory.CreateDirectory(currentPath);
 
             bool createGroupObject =
@@ -2838,11 +2947,16 @@
             LayerImportInfo info = GetLayerInfo(layer);
             if (info == null)
             {
+                PsdLogger.Warning("Skip art layer because no import info was found: " + DescribeLayerForLog(layer));
                 return;
             }
 
             bool createRuntimeObject = (LayoutInScene || CreatePrefab) && info.EffectiveVisible;
             bool exportTextureOnly = ShouldLayerEmitTextureFile(info);
+            PsdLogger.Info(
+                "Art layer decision: createRuntimeObject=" + createRuntimeObject +
+                ", exportTextureOnly=" + exportTextureOnly +
+                ", layer=" + DescribeLayerForLog(layer));
 
             if (!layer.IsTextLayer)
             {
@@ -2894,6 +3008,7 @@
             LayerImportInfo info = GetLayerInfo(layer);
             if (info == null)
             {
+                PsdLogger.Warning("Skip texture-only layer because no import info was found: " + DescribeLayerForLog(layer));
                 return;
             }
 
@@ -2914,6 +3029,7 @@
             {
                 string oldPath = currentPath;
                 currentPath = Path.Combine(currentPath, GetOutputFolderName(layer));
+                PsdLogger.Info("Create texture-only output directory: " + currentPath);
                 Directory.CreateDirectory(currentPath);
 
                 foreach (Layer child in layer.Children)
@@ -2945,13 +3061,20 @@
                 file = Path.Combine(currentPath, GetTextureBaseName(layer) + ".png");
                 if (!ShouldOverwriteExistingGeneratedFile(file))
                 {
+                    PsdLogger.Info("Skip PNG write by overwrite selection: " + file + " | " + DescribeLayerForLog(layer));
                     return file;
                 }
 
                 // decode the layer into a texture
+                PsdLogger.Step("Decode layer image: " + DescribeLayerForLog(layer));
                 Texture2D texture = ImageDecoder.DecodeImage(layer);
 
+                PsdLogger.Step("Write PNG: " + file);
                 File.WriteAllBytes(file, texture.EncodeToPNG());
+            }
+            else
+            {
+                PsdLogger.Info("Skip PNG for non-exportable layer: " + DescribeLayerForLog(layer) + ", allowTextLayer=" + allowTextLayer);
             }
 
             return file;
@@ -3012,12 +3135,14 @@
         {
             _ = packingTag;
             relativePathToSprite = relativePathToSprite.Replace('\\', '/');
+            PsdLogger.Step("Import sprite asset before applying settings: " + relativePathToSprite);
             AssetDatabase.ImportAsset(relativePathToSprite, ImportAssetOptions.ForceUpdate);
 
             // change the importer to make the texture a sprite
             TextureImporter textureImporter = AssetImporter.GetAtPath(relativePathToSprite) as TextureImporter;
             if (textureImporter != null)
             {
+                PsdLogger.Info("Apply TextureImporter sprite settings: " + relativePathToSprite);
                 textureImporter.textureType = TextureImporterType.Sprite;
                 textureImporter.mipmapEnabled = false;
                 textureImporter.spriteImportMode = SpriteImportMode.Single;
@@ -3025,10 +3150,24 @@
                 textureImporter.maxTextureSize = 2048;
                 textureImporter.spritePixelsPerUnit = PixelsToUnits;
             }
+            else
+            {
+                PsdLogger.Warning("TextureImporter was not found for generated sprite: " + relativePathToSprite);
+            }
 
+            PsdLogger.Step("Reimport sprite asset after applying settings: " + relativePathToSprite);
             AssetDatabase.ImportAsset(relativePathToSprite, ImportAssetOptions.ForceUpdate);
 
             Sprite sprite = (Sprite)AssetDatabase.LoadAssetAtPath(relativePathToSprite, typeof(Sprite));
+            if (sprite == null)
+            {
+                PsdLogger.Warning("Sprite load returned null: " + relativePathToSprite);
+            }
+            else
+            {
+                PsdLogger.Info("Sprite loaded: " + sprite.name + " from " + relativePathToSprite);
+            }
+
             return sprite;
         }
 

@@ -361,6 +361,19 @@
                             "Tip: Tag matching is case-insensitive. |Button only works when Unity UI is enabled, and |Animation only works in non-UI mode.\nAnchor prefixes must be written at the start of the name, for example: 左上CloseButton or 全局Background.\n上/下/左/右 use point anchors instead of edge stretch; 全局 gives zero margins, and images additionally cover the parent while keeping aspect.\nIf a folder has an anchor prefix, child items without their own prefix inherit the parent's anchor.\nAll generated Unity UI Images enable Image.preserveAspect by default. \"Preserve Aspect Ratio (No Stretch)\" only controls PSD-to-canvas coordinate scaling and is not the same as Image.preserveAspect."),
                         MessageType.Info);
 
+                    EditorGUILayout.BeginHorizontal();
+                    if (GUILayout.Button(Localize("打开日志目录", "Open Log Folder")))
+                    {
+                        PsdLogger.RevealLogFolder();
+                    }
+
+                    if (GUILayout.Button(Localize("定位最新日志", "Reveal Latest Log")))
+                    {
+                        PsdLogger.RevealLatestLog();
+                    }
+
+                    EditorGUILayout.EndHorizontal();
+
                     // draw our custom buttons for PSD files
                     if (GUILayout.Button(Localize("导出图层为纹理", "Export Layers As Textures")))
                     {
