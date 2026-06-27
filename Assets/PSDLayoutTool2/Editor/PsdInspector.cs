@@ -79,6 +79,33 @@
         private const string LanguagePrefKey = "PsdLayoutTool2.InspectorLanguage";
 
         /// <summary>
+        /// EditorPrefs key for showing Unity's built-in texture importer inspector inside the PSD inspector.
+        /// </summary>
+        private const string ShowNativeInspectorPrefKey = "PsdLayoutTool2.ShowNativeTextureImporterInspector";
+
+#if UNITY_2021_3_OR_NEWER && !UNITY_2022_1_OR_NEWER
+        /// <summary>
+        /// Unity 2021.3 can hang inside TextureImporterInspector.OnInspectorGUI when it is nested by reflection.
+        /// </summary>
+        private const bool DefaultShowNativeInspector = false;
+
+        /// <summary>
+        /// Do not persist the dangerous expanded state in the affected Unity version.
+        /// </summary>
+        private const bool PersistNativeInspectorFoldout = false;
+#else
+        /// <summary>
+        /// Keep the historical behavior outside the Unity 2021.3 compatibility path.
+        /// </summary>
+        private const bool DefaultShowNativeInspector = true;
+
+        /// <summary>
+        /// Persist the foldout state where the native inspector path is not known to hang.
+        /// </summary>
+        private const bool PersistNativeInspectorFoldout = true;
+#endif
+
+        /// <summary>
         /// Language options displayed in dropdown.
         /// </summary>
         private static readonly string[] LanguageOptions = { "中文", "English" };
@@ -94,6 +121,16 @@
         private GUIStyle guiStyle;
 
         /// <summary>
+        /// Whether to draw Unity's native texture importer settings for PSD assets.
+        /// </summary>
+        private bool showNativeInspector;
+
+        /// <summary>
+        /// Prevents repeatedly trying to create an internal Unity editor when reflection fails.
+        /// </summary>
+        private bool nativeEditorCreationFailed;
+
+        /// <summary>
         /// Current inspector display language.
         /// </summary>
         private static InspectorLanguage CurrentLanguage { get; set; } = InspectorLanguage.Chinese;
@@ -103,9 +140,9 @@
         /// </summary>
         public void OnEnable()
         {
-            // use reflection to get the default Inspector
-            Type type = Type.GetType("UnityEditor.TextureImporterInspector, UnityEditor");
-            nativeEditor = type != null ? CreateEditor(target, type) : null;
+            showNativeInspector = PersistNativeInspectorFoldout
+                ? EditorPrefs.GetBool(ShowNativeInspectorPrefKey, DefaultShowNativeInspector)
+                : DefaultShowNativeInspector;
 
             if (EditorPrefs.HasKey(OutputModePrefKey))
             {
@@ -151,6 +188,19 @@
             {
                 CurrentLanguage = (InspectorLanguage)EditorPrefs.GetInt(LanguagePrefKey, (int)InspectorLanguage.Chinese);
             }
+
+            if (!IsPsdTarget() || showNativeInspector)
+            {
+                EnsureNativeEditor();
+            }
+        }
+
+        /// <summary>
+        /// Called when Unity destroys this custom Inspector.
+        /// </summary>
+        public void OnDisable()
+        {
+            DisposeNativeEditor();
         }
 
         /// <summary>
@@ -161,12 +211,13 @@
         {
             EnsureHeaderStyle();
 
-            if (nativeEditor != null)
+            TextureImporter importer = target as TextureImporter;
+            if (importer != null)
             {
                 // check if it is a PSD file selected
-                string assetPath = ((TextureImporter)target).assetPath;
+                string assetPath = importer.assetPath;
 
-                if (assetPath.EndsWith(".psd", StringComparison.OrdinalIgnoreCase))
+                if (!string.IsNullOrEmpty(assetPath) && assetPath.EndsWith(".psd", StringComparison.OrdinalIgnoreCase))
                 {
                     GUIContent languageLabel = LocalizedContent(
                         "界面语言",
@@ -334,13 +385,12 @@
 
                     GUILayout.Label(Localize("<b>Unity 纹理导入设置</b>", "<b>Unity Texture Import Settings</b>"), guiStyle, GUILayout.Height(23));
 
-                    // draw the default Inspector for the PSD
-                    nativeEditor.OnInspectorGUI();
+                    DrawNativeInspectorFoldout();
                 }
                 else
                 {
                     // It is a "normal" Texture, not a PSD
-                    nativeEditor.OnInspectorGUI();
+                    DrawNativeTextureInspector();
                 }
             }
 
@@ -472,6 +522,124 @@
             guiStyle = baseStyle != null ? new GUIStyle(baseStyle) : new GUIStyle();
             guiStyle.richText = true;
             guiStyle.fontSize = 14;
+        }
+
+        /// <summary>
+        /// Draws the opt-in Unity texture importer settings section for PSD assets.
+        /// </summary>
+        private void DrawNativeInspectorFoldout()
+        {
+            bool newShowNativeInspector = EditorGUILayout.Foldout(
+                showNativeInspector,
+                Localize("显示 Unity 原生纹理设置", "Show Unity Texture Settings"),
+                true);
+
+            if (newShowNativeInspector != showNativeInspector)
+            {
+                showNativeInspector = newShowNativeInspector;
+                if (PersistNativeInspectorFoldout)
+                {
+                    EditorPrefs.SetBool(ShowNativeInspectorPrefKey, showNativeInspector);
+                }
+
+                if (!showNativeInspector)
+                {
+                    DisposeNativeEditor();
+                }
+            }
+
+            if (!showNativeInspector)
+            {
+                EditorGUILayout.HelpBox(
+                    Localize(
+                        "已默认收起 Unity 原生 TextureImporter 面板，以避开 Unity 2021.3 在嵌套绘制该面板时可能出现的长时间 Hold on。上方 PSD Layout Tool 2 按钮不依赖此面板。",
+                        "Unity's native TextureImporter panel is collapsed by default to avoid a possible long Hold on in Unity 2021.3 when that internal panel is drawn through a nested editor. The PSD Layout Tool 2 buttons above do not depend on it."),
+                    MessageType.Info);
+                return;
+            }
+
+            EditorGUILayout.HelpBox(
+                Localize(
+                    "如果 Unity 在此区域长时间显示 Hold on，请重新选择该 PSD 后保持此区域收起。",
+                    "If Unity shows a long Hold on in this section, reselect the PSD and keep this section collapsed."),
+                MessageType.Warning);
+
+            DrawNativeTextureInspector();
+        }
+
+        /// <summary>
+        /// Draws Unity's built-in texture importer inspector, falling back to the generic inspector if reflection fails.
+        /// </summary>
+        private void DrawNativeTextureInspector()
+        {
+            if (EnsureNativeEditor())
+            {
+                nativeEditor.OnInspectorGUI();
+                return;
+            }
+
+            DrawDefaultInspector();
+        }
+
+        /// <summary>
+        /// Creates Unity's built-in texture importer inspector on demand.
+        /// </summary>
+        /// <returns>True if the native editor is available; otherwise false.</returns>
+        private bool EnsureNativeEditor()
+        {
+            if (nativeEditor != null)
+            {
+                return true;
+            }
+
+            if (nativeEditorCreationFailed)
+            {
+                return false;
+            }
+
+            Type type = Type.GetType("UnityEditor.TextureImporterInspector, UnityEditor");
+            if (type == null)
+            {
+                nativeEditorCreationFailed = true;
+                return false;
+            }
+
+            try
+            {
+                nativeEditor = CreateEditor(target, type);
+            }
+            catch (Exception exception)
+            {
+                nativeEditorCreationFailed = true;
+                Debug.LogWarning("PSDLayoutTool2 failed to create Unity's TextureImporterInspector: " + exception.Message);
+            }
+
+            return nativeEditor != null;
+        }
+
+        /// <summary>
+        /// Destroys the reflected native editor to avoid keeping stale importer state alive.
+        /// </summary>
+        private void DisposeNativeEditor()
+        {
+            if (nativeEditor == null)
+            {
+                return;
+            }
+
+            UnityEngine.Object.DestroyImmediate(nativeEditor);
+            nativeEditor = null;
+        }
+
+        /// <summary>
+        /// Returns whether the current target is a PSD texture importer.
+        /// </summary>
+        /// <returns>True for PSD importers; otherwise false.</returns>
+        private bool IsPsdTarget()
+        {
+            TextureImporter importer = target as TextureImporter;
+            string assetPath = importer != null ? importer.assetPath : string.Empty;
+            return !string.IsNullOrEmpty(assetPath) && assetPath.EndsWith(".psd", StringComparison.OrdinalIgnoreCase);
         }
 
         /// <summary>
