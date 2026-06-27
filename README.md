@@ -81,7 +81,7 @@ This project is explicitly based on the original `UnityPSDLayoutTool` and adds c
 - 日志位置：`<Unity 项目根目录>/Library/PSDLayoutTool2/Logs`。
 - 可在 PSD Inspector 中点击 `打开日志目录` / `定位最新日志`，也可以通过顶部菜单 `Tools > PSD Layout Tool 2` 打开。
 - 日志会记录 PSD 读取、输出目录、冲突处理、图层导出、PNG 写入、Unity `ImportAsset`、Prefab 保存和异常堆栈。
-- 默认只保留最近 50 个日志文件，避免长期堆积。
+- 单个日志文件最多 100MB；日志目录总量也会清理到 100MB 以内，同时最多保留最近 50 个日志文件。
 
 #### Canvas 对齐模式（UI）
 
@@ -252,7 +252,7 @@ Actions:
 - Log folder: `<Unity project root>/Library/PSDLayoutTool2/Logs`.
 - Open logs from the PSD Inspector buttons or from `Tools > PSD Layout Tool 2`.
 - Logs include PSD loading, output paths, conflict handling, layer export, PNG writing, Unity `ImportAsset`, prefab saving, and exception stack traces.
-- The logger keeps the latest 50 log files by default.
+- Each log file is capped at 100MB. The log folder is also cleaned down to 100MB total, while keeping at most the latest 50 log files.
 
 ### Canvas Alignment Mode (UI)
 

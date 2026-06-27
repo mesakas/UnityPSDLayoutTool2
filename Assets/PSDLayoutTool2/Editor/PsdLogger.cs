@@ -15,11 +15,15 @@ namespace PsdLayoutTool2
     internal static class PsdLogger
     {
         private const int MaxLogFilesToKeep = 50;
+        private const long MaxLogBytes = 100L * 1024L * 1024L;
         private static readonly char[] InvalidFileNameChars = Path.GetInvalidFileNameChars();
+        private static readonly Encoding LogEncoding = new UTF8Encoding(false);
         private static Stopwatch sessionStopwatch;
         private static string currentLogPath;
+        private static long currentLogBytes;
         private static bool hasError;
         private static bool writeFailureReported;
+        private static bool logSizeLimitReached;
 
         /// <summary>
         /// Gets the directory that stores diagnostic logs.
@@ -51,9 +55,11 @@ namespace PsdLayoutTool2
             string safeAssetName = MakeSafeFileName(string.IsNullOrEmpty(assetPath) ? "UnknownPSD" : assetPath);
             string timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss_fff");
             currentLogPath = Path.Combine(LogDirectory, timestamp + "_" + safeAssetName + ".log");
+            currentLogBytes = 0;
             sessionStopwatch = Stopwatch.StartNew();
             hasError = false;
             writeFailureReported = false;
+            logSizeLimitReached = false;
 
             WriteRawLine("============================================================");
             WriteRawLine("PSDLayoutTool2 Import Log");
@@ -63,6 +69,8 @@ namespace PsdLayoutTool2
             WriteRawLine("Asset: " + assetPath);
             WriteRawLine("Mode: " + mode);
             WriteRawLine("Skip conflict prompt: " + skipConflictPrompt);
+            WriteRawLine("Max log file size: " + FormatBytes(MaxLogBytes));
+            WriteRawLine("Max log folder size: " + FormatBytes(MaxLogBytes));
             WriteRawLine("============================================================");
         }
 
@@ -84,9 +92,11 @@ namespace PsdLayoutTool2
             WriteRawLine("Log file: " + currentLogPath);
             WriteRawLine("============================================================");
             Debug.Log("[PSDLayoutTool2] Import log " + status + ": " + currentLogPath);
+            CleanupOldLogs();
 
             sessionStopwatch = null;
             currentLogPath = null;
+            currentLogBytes = 0;
         }
 
         /// <summary>
@@ -193,9 +203,14 @@ namespace PsdLayoutTool2
                 return;
             }
 
+            if (logSizeLimitReached)
+            {
+                return;
+            }
+
             try
             {
-                File.AppendAllText(currentLogPath, line + Environment.NewLine, Encoding.UTF8);
+                AppendLineWithinSizeLimit(line);
             }
             catch (Exception exception)
             {
@@ -205,6 +220,48 @@ namespace PsdLayoutTool2
                     Debug.LogWarning("[PSDLayoutTool2] Failed to write diagnostic log: " + exception.Message);
                 }
             }
+        }
+
+        private static void AppendLineWithinSizeLimit(string line)
+        {
+            string text = line + Environment.NewLine;
+            byte[] bytes = LogEncoding.GetBytes(text);
+            if (currentLogBytes + bytes.Length > MaxLogBytes)
+            {
+                TryWriteLogLimitMarker();
+                return;
+            }
+
+            using (FileStream stream = new FileStream(currentLogPath, FileMode.Append, FileAccess.Write, FileShare.ReadWrite))
+            {
+                stream.Write(bytes, 0, bytes.Length);
+            }
+
+            currentLogBytes += bytes.Length;
+        }
+
+        private static void TryWriteLogLimitMarker()
+        {
+            logSizeLimitReached = true;
+
+            string marker =
+                DateTime.Now.ToString("HH:mm:ss.fff") +
+                " [WARN] Log file reached " +
+                FormatBytes(MaxLogBytes) +
+                "; further entries were omitted." +
+                Environment.NewLine;
+            byte[] markerBytes = LogEncoding.GetBytes(marker);
+            if (currentLogBytes + markerBytes.Length <= MaxLogBytes)
+            {
+                using (FileStream stream = new FileStream(currentLogPath, FileMode.Append, FileAccess.Write, FileShare.ReadWrite))
+                {
+                    stream.Write(markerBytes, 0, markerBytes.Length);
+                }
+
+                currentLogBytes += markerBytes.Length;
+            }
+
+            Debug.LogWarning("[PSDLayoutTool2] Diagnostic log reached " + FormatBytes(MaxLogBytes) + ": " + currentLogPath);
         }
 
         private static string[] SplitLines(string message)
@@ -265,21 +322,50 @@ namespace PsdLayoutTool2
 
         private static void CleanupOldLogs()
         {
-            string[] logs = Directory.GetFiles(LogDirectory, "*.log")
-                .OrderByDescending(File.GetLastWriteTimeUtc)
+            FileInfo[] logs = Directory.GetFiles(LogDirectory, "*.log")
+                .Select(path => new FileInfo(path))
+                .OrderByDescending(file => file.LastWriteTimeUtc)
                 .ToArray();
 
             for (int i = MaxLogFilesToKeep; i < logs.Length; i++)
             {
-                try
+                DeleteLogFile(logs[i]);
+            }
+
+            logs = Directory.GetFiles(LogDirectory, "*.log")
+                .Select(path => new FileInfo(path))
+                .OrderByDescending(file => file.LastWriteTimeUtc)
+                .ToArray();
+
+            long totalBytes = logs.Sum(file => file.Exists ? file.Length : 0);
+            for (int i = logs.Length - 1; i >= 0 && totalBytes > MaxLogBytes; i--)
+            {
+                FileInfo log = logs[i];
+                long length = log.Exists ? log.Length : 0;
+                if (DeleteLogFile(log))
                 {
-                    File.Delete(logs[i]);
-                }
-                catch
-                {
-                    // Logging cleanup should never block an import.
+                    totalBytes -= length;
                 }
             }
+        }
+
+        private static bool DeleteLogFile(FileInfo log)
+        {
+            try
+            {
+                log.Delete();
+                return true;
+            }
+            catch
+            {
+                // Logging cleanup should never block an import.
+                return false;
+            }
+        }
+
+        private static string FormatBytes(long bytes)
+        {
+            return (bytes / 1024f / 1024f).ToString("0.#") + " MB";
         }
     }
 }
