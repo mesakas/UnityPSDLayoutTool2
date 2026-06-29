@@ -345,7 +345,7 @@
                     case ImageCompression.Rle:
                         for (int index2 = 0; index2 < height; ++index2)
                         {
-                            int startIdx = index2 * width;
+                            int startIdx = index2 * columns;
                             RleHelper.DecodedRow(reader.BaseStream, ImageData[index1], startIdx, columns);
                         }
 

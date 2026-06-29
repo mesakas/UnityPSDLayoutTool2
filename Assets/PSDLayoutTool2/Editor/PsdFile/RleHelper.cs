@@ -16,48 +16,70 @@
         /// <param name="columns">The number of columns</param>
         public static void DecodedRow(Stream stream, byte[] imgData, int startIdx, int columns)
         {
-            int num1 = 0;
-        label_11:
-            while (num1 < columns)
+            if (imgData == null)
             {
-                int num2 = stream.ReadByte();
-                if (num2 < 128)
+                throw new InvalidDataException("RLE output buffer is null.");
+            }
+
+            if (startIdx < 0 || columns < 0 || startIdx + columns > imgData.Length)
+            {
+                throw new InvalidDataException("RLE row exceeds the output buffer.");
+            }
+
+            int written = 0;
+            while (written < columns)
+            {
+                int marker = stream.ReadByte();
+                if (marker < 0)
                 {
-                    int num3 = num2 + 1;
-                    while (true)
-                    {
-                        if (num3 != 0 && startIdx + num1 < imgData.Length)
-                        {
-                            byte num4 = (byte)stream.ReadByte();
-                            imgData[startIdx + num1] = num4;
-                            ++num1;
-                            --num3;
-                        }
-                        else
-                        {
-                            goto label_11;
-                        }
-                    }
+                    throw new EndOfStreamException("Unexpected end of PSD RLE data while reading a row marker.");
                 }
 
-                if (num2 > 128)
+                if (marker == 128)
                 {
-                    int num3 = (num2 ^ byte.MaxValue) + 2;
-                    byte num4 = (byte)stream.ReadByte();
-                    while (true)
-                    {
-                        if (num3 != 0 && startIdx + num1 < imgData.Length)
-                        {
-                            imgData[startIdx + num1] = num4;
-                            ++num1;
-                            --num3;
-                        }
-                        else
-                        {
-                            goto label_11;
-                        }
-                    }
+                    continue;
                 }
+
+                if (marker < 128)
+                {
+                    int count = marker + 1;
+                    EnsureRowCapacity(written, count, columns);
+                    for (int index = 0; index < count; ++index)
+                    {
+                        int value = stream.ReadByte();
+                        if (value < 0)
+                        {
+                            throw new EndOfStreamException("Unexpected end of PSD RLE data while reading literal bytes.");
+                        }
+
+                        imgData[startIdx + written] = (byte)value;
+                        ++written;
+                    }
+
+                    continue;
+                }
+
+                int repeatCount = 257 - marker;
+                EnsureRowCapacity(written, repeatCount, columns);
+                int repeatValue = stream.ReadByte();
+                if (repeatValue < 0)
+                {
+                    throw new EndOfStreamException("Unexpected end of PSD RLE data while reading repeated byte.");
+                }
+
+                for (int index = 0; index < repeatCount; ++index)
+                {
+                    imgData[startIdx + written] = (byte)repeatValue;
+                    ++written;
+                }
+            }
+        }
+
+        private static void EnsureRowCapacity(int written, int count, int columns)
+        {
+            if (written + count > columns)
+            {
+                throw new InvalidDataException("PSD RLE row expands past the expected row length.");
             }
         }
     }

@@ -478,6 +478,7 @@
                 string fullPath = Path.Combine(GetFullProjectPath(), normalizedAssetPath);
 
                 PsdLogger.Step("Read PSD file: " + fullPath);
+                LogPsdFilePreflight(fullPath);
                 PsdFile psd = new PsdFile(fullPath);
                 CanvasSize = new Vector2(psd.Width, psd.Height);
                 TargetCanvasSize = CanvasSize;
@@ -1066,6 +1067,74 @@
         private static string NormalizePath(string path)
         {
             return Path.GetFullPath(path).Replace('\\', '/');
+        }
+
+        /// <summary>
+        /// Logs basic file and header details before the full PSD parser runs.
+        /// </summary>
+        /// <param name="fullPath">Absolute PSD file path.</param>
+        private static void LogPsdFilePreflight(string fullPath)
+        {
+            FileInfo fileInfo = new FileInfo(fullPath);
+            if (!fileInfo.Exists)
+            {
+                PsdLogger.Warning("PSD file does not exist before open: " + fullPath);
+                return;
+            }
+
+            PsdLogger.Info("PSD file size: " + FormatFileSize(fileInfo.Length));
+            if (fileInfo.Length > int.MaxValue)
+            {
+                PsdLogger.Warning("PSD file is larger than 2 GB; this parser uses 32-bit lengths and may not support it.");
+            }
+
+            using (FileStream stream = new FileStream(fullPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+            using (BinaryReverseReader reader = new BinaryReverseReader(stream))
+            {
+                if (stream.Length < 26)
+                {
+                    PsdLogger.Warning("PSD file is shorter than the required 26-byte header.");
+                    return;
+                }
+
+                string signature = new string(reader.ReadChars(4));
+                short version = reader.ReadInt16();
+                reader.BaseStream.Position += 6L;
+                short channelCount = reader.ReadInt16();
+                int height = reader.ReadInt32();
+                int width = reader.ReadInt32();
+                short depth = reader.ReadInt16();
+                ColorModes colorMode = (ColorModes)reader.ReadInt16();
+
+                PsdLogger.Info(
+                    "PSD header: signature=" + signature +
+                    ", version=" + version +
+                    ", size=" + width + "x" + height +
+                    ", channels=" + channelCount +
+                    ", depth=" + depth +
+                    ", colorMode=" + colorMode);
+
+                if (signature != "8BPS")
+                {
+                    PsdLogger.Warning("Unsupported PSD signature: " + signature);
+                }
+
+                if (version != 1)
+                {
+                    PsdLogger.Warning("Unsupported PSD version: " + version + ". PSB/large document files use version 2 and are not supported.");
+                }
+
+                if (depth != 1 && depth != 8 && depth != 16)
+                {
+                    PsdLogger.Warning("Unsupported PSD bit depth: " + depth);
+                }
+            }
+        }
+
+        private static string FormatFileSize(long bytes)
+        {
+            double megabytes = bytes / 1024d / 1024d;
+            return string.Format("{0:0.##} MB ({1} bytes)", megabytes, bytes);
         }
 
         /// <summary>

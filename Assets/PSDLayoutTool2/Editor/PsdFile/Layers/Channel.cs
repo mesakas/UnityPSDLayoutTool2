@@ -108,7 +108,7 @@
 
                         for (int index = 0; index < Layer.Rect.height; ++index)
                         {
-                            int startIdx = index * (int)Layer.Rect.width;
+                            int startIdx = index * columns;
                             RleHelper.DecodedRow(dataReader.BaseStream, ImageData, startIdx, columns);
                         }
 

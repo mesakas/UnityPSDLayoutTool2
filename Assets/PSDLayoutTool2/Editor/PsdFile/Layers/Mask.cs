@@ -144,7 +144,7 @@
 
                         for (int index = 0; index < (int)rect.height; ++index)
                         {
-                            int startIdx = index * (int)rect.width;
+                            int startIdx = index * columns;
                             RleHelper.DecodedRow(dataReader.BaseStream, channel.ImageData, startIdx, columns);
                         }
 
