@@ -99,13 +99,18 @@
         /// <param name="reader">The reader to use to read the pixel data.</param>
         internal void LoadPixelData(BinaryReverseReader reader)
         {
-            if (rect.width <= 0 || !Layer.SortedChannels.ContainsKey(-2))
+            if (!Layer.SortedChannels.ContainsKey(-2))
             {
                 return;
             }
 
             Channel channel = Layer.SortedChannels[-2];
             channel.Data = reader.ReadBytes(channel.Length);
+            if (rect.width <= 0 || rect.height <= 0)
+            {
+                return;
+            }
+
             using (BinaryReverseReader dataReader = channel.DataReader)
             {
                 channel.ImageCompression = (ImageCompression)dataReader.ReadInt16();
@@ -136,16 +141,12 @@
                         dataReader.Read(channel.ImageData, 0, channel.ImageData.Length);
                         break;
                     case ImageCompression.Rle:
-                        int[] nums = new int[(int)rect.height];
-                        for (int i = 0; i < (int)rect.height; i++)
-                        {
-                            nums[i] = dataReader.ReadInt16();
-                        }
+                        int[] rowByteCounts = RleHelper.ReadRowByteCounts(dataReader, (int)rect.height);
 
                         for (int index = 0; index < (int)rect.height; ++index)
                         {
                             int startIdx = index * columns;
-                            RleHelper.DecodedRow(dataReader.BaseStream, channel.ImageData, startIdx, columns);
+                            RleHelper.DecodedRow(dataReader.BaseStream, channel.ImageData, startIdx, columns, rowByteCounts[index]);
                         }
 
                         break;

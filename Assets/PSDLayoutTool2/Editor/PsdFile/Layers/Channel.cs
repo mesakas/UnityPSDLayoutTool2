@@ -99,17 +99,12 @@
                         dataReader.Read(ImageData, 0, ImageData.Length);
                         break;
                     case ImageCompression.Rle:
-                        int[] nums = new int[(int)Layer.Rect.height];
-
-                        for (int i = 0; i < Layer.Rect.height; i++)
-                        {
-                            nums[i] = dataReader.ReadInt16();
-                        }
+                        int[] rowByteCounts = RleHelper.ReadRowByteCounts(dataReader, (int)Layer.Rect.height);
 
                         for (int index = 0; index < Layer.Rect.height; ++index)
                         {
                             int startIdx = index * columns;
-                            RleHelper.DecodedRow(dataReader.BaseStream, ImageData, startIdx, columns);
+                            RleHelper.DecodedRow(dataReader.BaseStream, ImageData, startIdx, columns, rowByteCounts[index]);
                         }
 
                         break;

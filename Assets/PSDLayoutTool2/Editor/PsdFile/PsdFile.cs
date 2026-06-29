@@ -315,9 +315,14 @@
         {
             ImageCompression = (ImageCompression)reader.ReadInt16();
             ImageData = new byte[channels][];
+            int[][] rowByteCounts = null;
             if (ImageCompression == ImageCompression.Rle)
             {
-                reader.BaseStream.Position += height * channels * 2;
+                rowByteCounts = new int[channels][];
+                for (int channel = 0; channel < channels; ++channel)
+                {
+                    rowByteCounts[channel] = RleHelper.ReadRowByteCounts(reader, height);
+                }
             }
 
             int columns = 0;
@@ -346,7 +351,7 @@
                         for (int index2 = 0; index2 < height; ++index2)
                         {
                             int startIdx = index2 * columns;
-                            RleHelper.DecodedRow(reader.BaseStream, ImageData[index1], startIdx, columns);
+                            RleHelper.DecodedRow(reader.BaseStream, ImageData[index1], startIdx, columns, rowByteCounts[index1][index2]);
                         }
 
                         break;
