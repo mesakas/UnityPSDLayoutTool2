@@ -1,21 +1,15 @@
-﻿namespace PsdLayoutTool2
+namespace PsdLayoutTool2
 {
     using System;
     using UnityEditor;
     using UnityEngine;
 
     /// <summary>
-    /// A custom Inspector to allow PSD files to be turned into prefabs and separate textures per layer.
+    /// Adds PSD layout controls to Unity's existing importer header without replacing its Inspector.
+    /// Unity retains ownership of texture import settings, Apply/Revert, previews and multi-selection.
     /// </summary>
-    /// <remarks>
-    /// Unity isn't able to draw the custom inspector for a TextureImporter (even if calling the base
-    /// method or calling DrawDefaultInspector).  It comes out as just a generic, hard to use mess of GUI
-    /// items.  To add in the buttons we want without disrupting the normal GUI for TextureImporter, we have
-    /// to do some reflection "magic".
-    /// Thanks to DeadNinja: http://forum.unity3d.com/threads/custom-textureimporterinspector.260833/
-    /// </remarks>
-    [CustomEditor(typeof(TextureImporter))]
-    public class PsdInspector : Editor
+    [InitializeOnLoad]
+    public static class PsdInspector
     {
         /// <summary>
         /// Supported inspector display languages.
@@ -78,72 +72,60 @@
         /// </summary>
         private const string LanguagePrefKey = "PsdLayoutTool2.InspectorLanguage";
 
-        /// <summary>
-        /// EditorPrefs key for showing Unity's built-in texture importer inspector inside the PSD inspector.
-        /// </summary>
-        private const string ShowNativeInspectorPrefKey = "PsdLayoutTool2.ShowNativeTextureImporterInspector";
-
-#if UNITY_2021_3_OR_NEWER && !UNITY_2022_1_OR_NEWER
-        /// <summary>
-        /// Unity 2021.3 can hang inside TextureImporterInspector.OnInspectorGUI when it is nested by reflection.
-        /// </summary>
-        private const bool DefaultShowNativeInspector = false;
-
-        /// <summary>
-        /// Do not persist the dangerous expanded state in the affected Unity version.
-        /// </summary>
-        private const bool PersistNativeInspectorFoldout = false;
-#else
-        /// <summary>
-        /// Keep the historical behavior outside the Unity 2021.3 compatibility path.
-        /// </summary>
-        private const bool DefaultShowNativeInspector = true;
-
-        /// <summary>
-        /// Persist the foldout state where the native inspector path is not known to hang.
-        /// </summary>
-        private const bool PersistNativeInspectorFoldout = true;
-#endif
-
-        /// <summary>
-        /// Language options displayed in dropdown.
-        /// </summary>
         private static readonly string[] LanguageOptions = { "中文", "English" };
-
-        /// <summary>
-        /// The native Unity editor used to render the <see cref="TextureImporter"/>'s Inspector.
-        /// </summary>
-        private Editor nativeEditor;
-
-        /// <summary>
-        /// The style used to draw the section header text.
-        /// </summary>
-        private GUIStyle guiStyle;
-
-        /// <summary>
-        /// Whether to draw Unity's native texture importer settings for PSD assets.
-        /// </summary>
-        private bool showNativeInspector;
-
-        /// <summary>
-        /// Prevents repeatedly trying to create an internal Unity editor when reflection fails.
-        /// </summary>
-        private bool nativeEditorCreationFailed;
-
-        /// <summary>
-        /// Current inspector display language.
-        /// </summary>
+        private static GUIStyle guiStyle;
+        private static bool preferencesLoaded;
         private static InspectorLanguage CurrentLanguage { get; set; } = InspectorLanguage.Chinese;
 
-        /// <summary>
-        /// Called by Unity when any Texture file is first clicked on and the Inspector is populated.
-        /// </summary>
-        public void OnEnable()
+        static PsdInspector()
         {
-            showNativeInspector = PersistNativeInspectorFoldout
-                ? EditorPrefs.GetBool(ShowNativeInspectorPrefKey, DefaultShowNativeInspector)
-                : DefaultShowNativeInspector;
+            Editor.finishedDefaultHeaderGUI += DrawPsdHeader;
+        }
 
+        /// <summary>
+        /// Only a single PSD importer gets layout controls. Other assets and multi-selection use
+        /// Unity's native Inspector unchanged, including its Apply/Revert initialization.
+        /// </summary>
+        private static void DrawPsdHeader(Editor editor)
+        {
+            if (editor == null || editor.targets.Length != 1)
+            {
+                return;
+            }
+
+            TextureImporter importer = editor.target as TextureImporter;
+            if (importer == null || string.IsNullOrEmpty(importer.assetPath)
+                || !importer.assetPath.EndsWith(".psd", StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            if (!preferencesLoaded)
+            {
+                LoadPreferences();
+                preferencesLoaded = true;
+            }
+
+            EnsureHeaderStyle();
+            bool previousChanged = GUI.changed;
+            int previousIndent = EditorGUI.indentLevel;
+            try
+            {
+                EditorGUI.indentLevel = 0;
+                GUILayout.Space(4);
+                DrawPsdControls(importer.assetPath);
+                GUILayout.Space(4);
+            }
+            finally
+            {
+                // Plugin options are not texture import settings. Do not mark the native UI changed.
+                GUI.changed = previousChanged;
+                EditorGUI.indentLevel = previousIndent;
+            }
+        }
+
+        private static void LoadPreferences()
+        {
             if (EditorPrefs.HasKey(OutputModePrefKey))
             {
                 PsdImporter.OutputMode = (PsdImporter.OutputDirectoryMode)EditorPrefs.GetInt(OutputModePrefKey, (int)PsdImporter.OutputDirectoryMode.PsdDirectory);
@@ -188,231 +170,183 @@
             {
                 CurrentLanguage = (InspectorLanguage)EditorPrefs.GetInt(LanguagePrefKey, (int)InspectorLanguage.Chinese);
             }
-
-            if (!IsPsdTarget() || showNativeInspector)
-            {
-                EnsureNativeEditor();
-            }
         }
 
         /// <summary>
-        /// Called when Unity destroys this custom Inspector.
+        /// Draws plugin options and actions above Unity's native texture import settings.
         /// </summary>
-        public void OnDisable()
+        private static void DrawPsdControls(string assetPath)
         {
-            DisposeNativeEditor();
-        }
-
-        /// <summary>
-        /// Draws the Inspector GUI for the TextureImporter.
-        /// Normal Texture files should appear as they normally do, however PSD files will have additional items.
-        /// </summary>
-        public override void OnInspectorGUI()
-        {
-            EnsureHeaderStyle();
-
-            TextureImporter importer = target as TextureImporter;
-            if (importer != null)
+            GUIContent languageLabel = LocalizedContent(
+                "界面语言",
+                "Inspector Language",
+                "切换此插件 Inspector 的显示语言。",
+                "Switch the display language for this plugin inspector.");
+            int languageIndex = EditorGUILayout.Popup(languageLabel, (int)CurrentLanguage, LanguageOptions);
+            if (languageIndex != (int)CurrentLanguage)
             {
-                // check if it is a PSD file selected
-                string assetPath = importer.assetPath;
-
-                if (!string.IsNullOrEmpty(assetPath) && assetPath.EndsWith(".psd", StringComparison.OrdinalIgnoreCase))
-                {
-                    GUIContent languageLabel = LocalizedContent(
-                        "界面语言",
-                        "Inspector Language",
-                        "切换此插件 Inspector 的显示语言。",
-                        "Switch the display language for this plugin inspector.");
-                    int languageIndex = EditorGUILayout.Popup(languageLabel, (int)CurrentLanguage, LanguageOptions);
-                    if (languageIndex != (int)CurrentLanguage)
-                    {
-                        CurrentLanguage = (InspectorLanguage)languageIndex;
-                        EditorPrefs.SetInt(LanguagePrefKey, languageIndex);
-                    }
-
-                    GUILayout.Label(Localize("<b>PSD 布局工具 2</b>", "<b>PSD Layout Tool 2</b>"), guiStyle, GUILayout.Height(23));
-
-                    GUIContent maximumDepthLabel = LocalizedContent(
-                        "最大深度（Z）",
-                        "Maximum Depth (Z)",
-                        "用于图层布局的最远 Z 值。导入时会从该值逐层递减到 0。\n数值越大，层与层之间的深度间隔越明显。",
-                        "Farthest Z value for layer layout. Import decrements this value layer by layer toward 0.\nLarger values create more depth spacing between layers.");
-                    PsdImporter.MaximumDepth = EditorGUILayout.FloatField(maximumDepthLabel, PsdImporter.MaximumDepth);
-
-                    GUIContent pixelsToUnitsLabel = LocalizedContent(
-                        "像素到单位（PPU）",
-                        "Pixels To Units (PPU)",
-                        "每多少像素对应 1 个 Unity 世界单位。\n通常建议与项目中 Sprite 的 Pixels Per Unit 保持一致（常见为 100）。",
-                        "How many pixels equal 1 Unity world unit.\nUsually keep this consistent with your Sprite Pixels Per Unit (commonly 100).");
-                    PsdImporter.PixelsToUnits = EditorGUILayout.FloatField(pixelsToUnitsLabel, PsdImporter.PixelsToUnits);
-
-                    EditorGUI.BeginChangeCheck();
-                    GUIContent useUnityUILabel = LocalizedContent(
-                        "使用 Unity UI",
-                        "Use Unity UI",
-                        "开启后生成 Canvas/Image/Text/Button 等 UI 对象。\n关闭后生成 SpriteRenderer/TextMesh 等普通场景对象。",
-                        "When enabled, generates Canvas/Image/Text/Button UI objects.\nWhen disabled, generates regular scene objects like SpriteRenderer/TextMesh.");
-                    PsdImporter.UseUnityUI = EditorGUILayout.Toggle(useUnityUILabel, PsdImporter.UseUnityUI);
-
-                    if (PsdImporter.UseUnityUI)
-                    {
-                        UnityEngine.Canvas currentCanvas = FindCanvasByHierarchyPath(PsdImporter.TargetCanvasPath);
-                        GUIContent targetCanvasLabel = LocalizedContent(
-                            "目标 Canvas（可选）",
-                            "Target Canvas (Optional)",
-                            "指定后：生成结果会挂到这个 Canvas 下，并按 Canvas 的像素坐标对齐。\n留空：按旧行为自动创建一个 World Space Canvas。",
-                            "When set, generated results are parented under this canvas and aligned in canvas pixel coordinates.\nWhen empty, legacy behavior creates a World Space canvas automatically.");
-                        UnityEngine.Canvas selectedCanvas = (UnityEngine.Canvas)EditorGUILayout.ObjectField(
-                            targetCanvasLabel,
-                            currentCanvas,
-                            typeof(UnityEngine.Canvas),
-                            true);
-
-                        if (selectedCanvas != currentCanvas)
-                        {
-                            PsdImporter.TargetCanvasPath = selectedCanvas != null ? GetHierarchyPath(selectedCanvas.transform) : string.Empty;
-                        }
-
-                        if (!string.IsNullOrEmpty(PsdImporter.TargetCanvasPath))
-                        {
-                            EditorGUILayout.LabelField(Localize("Canvas 路径", "Canvas Path"), PsdImporter.TargetCanvasPath);
-                            if (currentCanvas == null)
-                            {
-                                EditorGUILayout.HelpBox(
-                                    Localize(
-                                        "未在当前场景找到该 Canvas，将回退为自动创建 Canvas。请重新选择目标 Canvas。",
-                                        "The canvas was not found in the current scene. Import will fall back to auto-created canvas. Please reselect the target canvas."),
-                                    MessageType.Warning);
-                            }
-                        }
-
-                        GUIContent scaleToCanvasLabel = LocalizedContent(
-                            "匹配目标 Canvas 尺寸",
-                            "Scale To Target Canvas",
-                            "开启后会把 PSD 坐标与尺寸按目标 Canvas 尺寸缩放映射。\n关闭后保持 PSD 1:1 像素映射。",
-                            "When enabled, PSD positions and sizes are scaled to target canvas size.\nWhen disabled, keeps strict 1:1 PSD pixel mapping.");
-                        PsdImporter.ScaleToTargetCanvas = EditorGUILayout.Toggle(scaleToCanvasLabel, PsdImporter.ScaleToTargetCanvas);
-
-                        EditorGUI.BeginDisabledGroup(!PsdImporter.ScaleToTargetCanvas);
-                        GUIContent preserveAspectLabel = LocalizedContent(
-                            "保持宽高比（不拉伸）",
-                            "Preserve Aspect Ratio (No Stretch)",
-                            "开启后使用等比缩放适配目标 Canvas，避免 X/Y 比例不一致导致的拉伸。\n关闭后按宽高分别缩放（可能拉伸）。",
-                            "When enabled, uses uniform scaling to avoid stretch when X/Y ratios differ.\nWhen disabled, scales X and Y independently (may stretch).");
-                        PsdImporter.PreserveAspectWhenScalingToCanvas = EditorGUILayout.Toggle(
-                            preserveAspectLabel,
-                            PsdImporter.PreserveAspectWhenScalingToCanvas);
-                        EditorGUI.EndDisabledGroup();
-
-                        GUIContent autoAnchorLabel = LocalizedContent(
-                            "按名称自动设置锚点",
-                            "Auto Anchor By Name",
-                            "当图层或文件夹名称以 左上、左下、右上、右下、中间、左中、右中、上中、下中、上、下、左、右、全局 开头时，自动设置 UI 锚点。",
-                            "Automatically sets UI anchors when a layer or folder name starts with 左上, 左下, 右上, 右下, 中间, 左中, 右中, 上中, 下中, 上, 下, 左, 右, or 全局.");
-                        PsdImporter.EnableAutoAnchorByName = EditorGUILayout.Toggle(autoAnchorLabel, PsdImporter.EnableAutoAnchorByName);
-
-                        GUIContent rootGlobalLabel = LocalizedContent(
-                            "ROOT 默认使用全局锚点",
-                            "Root Uses Global By Default",
-                            "开启后，最外层导入根节点会自动全拉伸到父 Canvas，四边距为 0。",
-                            "When enabled, the outermost generated root stretches to the parent canvas with zero margins.");
-                        PsdImporter.RootUseGlobalAnchorByDefault = EditorGUILayout.Toggle(rootGlobalLabel, PsdImporter.RootUseGlobalAnchorByDefault);
-                    }
-
-                    GUIContent outputModeLabel = LocalizedContent(
-                        "资源输出位置",
-                        "Output Directory",
-                        "控制导出的 PNG、动画片段（.anim）和控制器（.controller）保存到哪里。",
-                        "Controls where exported PNGs, animation clips (.anim), and controllers (.controller) are saved.");
-                    int outputModeIndex = EditorGUILayout.Popup(outputModeLabel, ToOutputModeIndex(PsdImporter.OutputMode), GetOutputModeOptions());
-                    PsdImporter.OutputMode = ToOutputMode(outputModeIndex);
-
-                    GUIContent outputFolderNameLabel = LocalizedContent(
-                        "输出文件夹名",
-                        "Output Folder Name",
-                        "生成文件夹名称。留空时自动使用 PSD 文件名。\n可用于按模块命名，例如 UI_MainMenu、角色立绘等。",
-                        "Name of generated output folder. Empty uses PSD file name automatically.\nUseful for module naming such as UI_MainMenu, character portraits, etc.");
-                    PsdImporter.OutputFolderName = EditorGUILayout.TextField(outputFolderNameLabel, PsdImporter.OutputFolderName);
-
-                    GUIContent prefabModeLabel = LocalizedContent(
-                        "Prefab 输出位置",
-                        "Prefab Output",
-                        "控制 Generate Prefab 生成的预制体保存位置。",
-                        "Controls where prefabs generated by Generate Prefab are saved.");
-                    int prefabModeIndex = EditorGUILayout.Popup(prefabModeLabel, ToPrefabModeIndex(PsdImporter.PrefabMode), GetPrefabModeOptions());
-                    PsdImporter.PrefabMode = ToPrefabMode(prefabModeIndex);
-
-                    if (EditorGUI.EndChangeCheck())
-                    {
-                        EditorPrefs.SetInt(OutputModePrefKey, (int)PsdImporter.OutputMode);
-                        EditorPrefs.SetString(OutputFolderNamePrefKey, PsdImporter.OutputFolderName ?? string.Empty);
-                        EditorPrefs.SetInt(PrefabModePrefKey, (int)PsdImporter.PrefabMode);
-                        EditorPrefs.SetString(TargetCanvasPathPrefKey, PsdImporter.TargetCanvasPath ?? string.Empty);
-                        EditorPrefs.SetBool(ScaleToTargetCanvasPrefKey, PsdImporter.ScaleToTargetCanvas);
-                        EditorPrefs.SetBool(PreserveAspectPrefKey, PsdImporter.PreserveAspectWhenScalingToCanvas);
-                        EditorPrefs.SetBool(AutoAnchorByNamePrefKey, PsdImporter.EnableAutoAnchorByName);
-                        EditorPrefs.SetBool(RootGlobalAnchorPrefKey, PsdImporter.RootUseGlobalAnchorByDefault);
-                    }
-
-                    EditorGUILayout.HelpBox(
-                        Localize(
-                            "提示：标签匹配不区分大小写。|Button 仅在启用 Unity UI 时生效，|Animation 仅在非 UI 模式生效。\n命名前缀必须写在名称开头，例如：左上关闭按钮、全局背景。\n上/下/左/右 会按单点锚点处理，不会做边缘拉伸；全局 会让 UI 节点四边距为 0，其中图片会额外按比例覆盖父节点。\n如果文件夹本身带锚点前缀，则其中没有前缀的子项会默认继承父级锚点。\n所有导入生成的 Unity UI Image 都会默认开启 Image.preserveAspect。\"保持宽高比（不拉伸）\" 只控制 PSD 到目标 Canvas 的坐标缩放，不等同于 Image.preserveAspect。",
-                            "Tip: Tag matching is case-insensitive. |Button only works when Unity UI is enabled, and |Animation only works in non-UI mode.\nAnchor prefixes must be written at the start of the name, for example: 左上CloseButton or 全局Background.\n上/下/左/右 use point anchors instead of edge stretch; 全局 gives zero margins, and images additionally cover the parent while keeping aspect.\nIf a folder has an anchor prefix, child items without their own prefix inherit the parent's anchor.\nAll generated Unity UI Images enable Image.preserveAspect by default. \"Preserve Aspect Ratio (No Stretch)\" only controls PSD-to-canvas coordinate scaling and is not the same as Image.preserveAspect."),
-                        MessageType.Info);
-
-                    EditorGUILayout.BeginHorizontal();
-                    if (GUILayout.Button(Localize("打开日志目录", "Open Log Folder")))
-                    {
-                        PsdLogger.RevealLogFolder();
-                    }
-
-                    if (GUILayout.Button(Localize("定位最新日志", "Reveal Latest Log")))
-                    {
-                        PsdLogger.RevealLatestLog();
-                    }
-
-                    EditorGUILayout.EndHorizontal();
-
-                    // draw our custom buttons for PSD files
-                    if (GUILayout.Button(Localize("导出图层为纹理", "Export Layers As Textures")))
-                    {
-                        PsdImporter.ExportLayersAsTextures(assetPath);
-                    }
-
-                    if (GUILayout.Button(Localize("在当前场景中布局", "Layout In Current Scene")))
-                    {
-                        PsdImporter.LayoutInCurrentScene(assetPath);
-                    }
-
-                    if (GUILayout.Button(Localize("生成预制体", "Generate Prefab")))
-                    {
-                        PsdImporter.GeneratePrefab(assetPath);
-                    }
-
-                    GUILayout.Space(3);
-
-                    GUILayout.Box(string.Empty, GUILayout.Height(1), GUILayout.MaxWidth(Screen.width - 30));
-
-                    GUILayout.Space(3);
-
-                    GUILayout.Label(Localize("<b>Unity 纹理导入设置</b>", "<b>Unity Texture Import Settings</b>"), guiStyle, GUILayout.Height(23));
-
-                    DrawNativeInspectorFoldout();
-                }
-                else
-                {
-                    // It is a "normal" Texture, not a PSD
-                    DrawNativeTextureInspector();
-                }
+                CurrentLanguage = (InspectorLanguage)languageIndex;
+                EditorPrefs.SetInt(LanguagePrefKey, languageIndex);
             }
 
-            // Unfortunately we cant hide the ImportedObject section because the interal InspectorWindow checks via
-            // "if (editor is AssetImporterEditor)" and all flags that this check sets are method local variables
-            // so aside from direct patching UnityEditor.dll, reflection cannot be used here.
+            GUILayout.Label(Localize("<b>PSD 布局工具 2</b>", "<b>PSD Layout Tool 2</b>"), guiStyle, GUILayout.Height(23));
 
-            // Therefore we just move the ImportedObject section out of view
-            ////GUILayout.Space(2048);
+            GUIContent maximumDepthLabel = LocalizedContent(
+                "最大深度（Z）",
+                "Maximum Depth (Z)",
+                "用于图层布局的最远 Z 值。导入时会从该值逐层递减到 0。\n数值越大，层与层之间的深度间隔越明显。",
+                "Farthest Z value for layer layout. Import decrements this value layer by layer toward 0.\nLarger values create more depth spacing between layers.");
+            PsdImporter.MaximumDepth = EditorGUILayout.FloatField(maximumDepthLabel, PsdImporter.MaximumDepth);
+
+            GUIContent pixelsToUnitsLabel = LocalizedContent(
+                "像素到单位（PPU）",
+                "Pixels To Units (PPU)",
+                "每多少像素对应 1 个 Unity 世界单位。\n通常建议与项目中 Sprite 的 Pixels Per Unit 保持一致（常见为 100）。",
+                "How many pixels equal 1 Unity world unit.\nUsually keep this consistent with your Sprite Pixels Per Unit (commonly 100).");
+            PsdImporter.PixelsToUnits = EditorGUILayout.FloatField(pixelsToUnitsLabel, PsdImporter.PixelsToUnits);
+
+            EditorGUI.BeginChangeCheck();
+            GUIContent useUnityUILabel = LocalizedContent(
+                "使用 Unity UI",
+                "Use Unity UI",
+                "开启后生成 Canvas/Image/Text/Button 等 UI 对象。\n关闭后生成 SpriteRenderer/TextMesh 等普通场景对象。",
+                "When enabled, generates Canvas/Image/Text/Button UI objects.\nWhen disabled, generates regular scene objects like SpriteRenderer/TextMesh.");
+            PsdImporter.UseUnityUI = EditorGUILayout.Toggle(useUnityUILabel, PsdImporter.UseUnityUI);
+
+            if (PsdImporter.UseUnityUI)
+            {
+                UnityEngine.Canvas currentCanvas = FindCanvasByHierarchyPath(PsdImporter.TargetCanvasPath);
+                GUIContent targetCanvasLabel = LocalizedContent(
+                    "目标 Canvas（可选）",
+                    "Target Canvas (Optional)",
+                    "指定后：生成结果会挂到这个 Canvas 下，并按 Canvas 的像素坐标对齐。\n留空：按旧行为自动创建一个 World Space Canvas。",
+                    "When set, generated results are parented under this canvas and aligned in canvas pixel coordinates.\nWhen empty, legacy behavior creates a World Space canvas automatically.");
+                UnityEngine.Canvas selectedCanvas = (UnityEngine.Canvas)EditorGUILayout.ObjectField(
+                    targetCanvasLabel,
+                    currentCanvas,
+                    typeof(UnityEngine.Canvas),
+                    true);
+
+                if (selectedCanvas != currentCanvas)
+                {
+                    PsdImporter.TargetCanvasPath = selectedCanvas != null ? GetHierarchyPath(selectedCanvas.transform) : string.Empty;
+                }
+
+                if (!string.IsNullOrEmpty(PsdImporter.TargetCanvasPath))
+                {
+                    EditorGUILayout.LabelField(Localize("Canvas 路径", "Canvas Path"), PsdImporter.TargetCanvasPath);
+                    if (currentCanvas == null)
+                    {
+                        EditorGUILayout.HelpBox(
+                            Localize(
+                                "未在当前场景找到该 Canvas，将回退为自动创建 Canvas。请重新选择目标 Canvas。",
+                                "The canvas was not found in the current scene. Import will fall back to auto-created canvas. Please reselect the target canvas."),
+                            MessageType.Warning);
+                    }
+                }
+
+                GUIContent scaleToCanvasLabel = LocalizedContent(
+                    "匹配目标 Canvas 尺寸",
+                    "Scale To Target Canvas",
+                    "开启后会把 PSD 坐标与尺寸按目标 Canvas 尺寸缩放映射。\n关闭后保持 PSD 1:1 像素映射。",
+                    "When enabled, PSD positions and sizes are scaled to target canvas size.\nWhen disabled, keeps strict 1:1 PSD pixel mapping.");
+                PsdImporter.ScaleToTargetCanvas = EditorGUILayout.Toggle(scaleToCanvasLabel, PsdImporter.ScaleToTargetCanvas);
+
+                EditorGUI.BeginDisabledGroup(!PsdImporter.ScaleToTargetCanvas);
+                GUIContent preserveAspectLabel = LocalizedContent(
+                    "保持宽高比（不拉伸）",
+                    "Preserve Aspect Ratio (No Stretch)",
+                    "开启后使用等比缩放适配目标 Canvas，避免 X/Y 比例不一致导致的拉伸。\n关闭后按宽高分别缩放（可能拉伸）。",
+                    "When enabled, uses uniform scaling to avoid stretch when X/Y ratios differ.\nWhen disabled, scales X and Y independently (may stretch).");
+                PsdImporter.PreserveAspectWhenScalingToCanvas = EditorGUILayout.Toggle(
+                    preserveAspectLabel,
+                    PsdImporter.PreserveAspectWhenScalingToCanvas);
+                EditorGUI.EndDisabledGroup();
+
+                GUIContent autoAnchorLabel = LocalizedContent(
+                    "按名称自动设置锚点",
+                    "Auto Anchor By Name",
+                    "当图层或文件夹名称以 左上、左下、右上、右下、中间、左中、右中、上中、下中、上、下、左、右、全局 开头时，自动设置 UI 锚点。",
+                    "Automatically sets UI anchors when a layer or folder name starts with 左上, 左下, 右上, 右下, 中间, 左中, 右中, 上中, 下中, 上, 下, 左, 右, or 全局.");
+                PsdImporter.EnableAutoAnchorByName = EditorGUILayout.Toggle(autoAnchorLabel, PsdImporter.EnableAutoAnchorByName);
+
+                GUIContent rootGlobalLabel = LocalizedContent(
+                    "ROOT 默认使用全局锚点",
+                    "Root Uses Global By Default",
+                    "开启后，最外层导入根节点会自动全拉伸到父 Canvas，四边距为 0。",
+                    "When enabled, the outermost generated root stretches to the parent canvas with zero margins.");
+                PsdImporter.RootUseGlobalAnchorByDefault = EditorGUILayout.Toggle(rootGlobalLabel, PsdImporter.RootUseGlobalAnchorByDefault);
+            }
+
+            GUIContent outputModeLabel = LocalizedContent(
+                "资源输出位置",
+                "Output Directory",
+                "控制导出的 PNG、动画片段（.anim）和控制器（.controller）保存到哪里。",
+                "Controls where exported PNGs, animation clips (.anim), and controllers (.controller) are saved.");
+            int outputModeIndex = EditorGUILayout.Popup(outputModeLabel, ToOutputModeIndex(PsdImporter.OutputMode), GetOutputModeOptions());
+            PsdImporter.OutputMode = ToOutputMode(outputModeIndex);
+
+            GUIContent outputFolderNameLabel = LocalizedContent(
+                "输出文件夹名",
+                "Output Folder Name",
+                "生成文件夹名称。留空时自动使用 PSD 文件名。\n可用于按模块命名，例如 UI_MainMenu、角色立绘等。",
+                "Name of generated output folder. Empty uses PSD file name automatically.\nUseful for module naming such as UI_MainMenu, character portraits, etc.");
+            PsdImporter.OutputFolderName = EditorGUILayout.TextField(outputFolderNameLabel, PsdImporter.OutputFolderName);
+
+            GUIContent prefabModeLabel = LocalizedContent(
+                "Prefab 输出位置",
+                "Prefab Output",
+                "控制 Generate Prefab 生成的预制体保存位置。",
+                "Controls where prefabs generated by Generate Prefab are saved.");
+            int prefabModeIndex = EditorGUILayout.Popup(prefabModeLabel, ToPrefabModeIndex(PsdImporter.PrefabMode), GetPrefabModeOptions());
+            PsdImporter.PrefabMode = ToPrefabMode(prefabModeIndex);
+
+            if (EditorGUI.EndChangeCheck())
+            {
+                EditorPrefs.SetInt(OutputModePrefKey, (int)PsdImporter.OutputMode);
+                EditorPrefs.SetString(OutputFolderNamePrefKey, PsdImporter.OutputFolderName ?? string.Empty);
+                EditorPrefs.SetInt(PrefabModePrefKey, (int)PsdImporter.PrefabMode);
+                EditorPrefs.SetString(TargetCanvasPathPrefKey, PsdImporter.TargetCanvasPath ?? string.Empty);
+                EditorPrefs.SetBool(ScaleToTargetCanvasPrefKey, PsdImporter.ScaleToTargetCanvas);
+                EditorPrefs.SetBool(PreserveAspectPrefKey, PsdImporter.PreserveAspectWhenScalingToCanvas);
+                EditorPrefs.SetBool(AutoAnchorByNamePrefKey, PsdImporter.EnableAutoAnchorByName);
+                EditorPrefs.SetBool(RootGlobalAnchorPrefKey, PsdImporter.RootUseGlobalAnchorByDefault);
+            }
+
+            EditorGUILayout.HelpBox(
+                Localize(
+                    "提示：标签匹配不区分大小写。|Button 仅在启用 Unity UI 时生效，|Animation 仅在非 UI 模式生效。\n命名前缀必须写在名称开头，例如：左上关闭按钮、全局背景。\n上/下/左/右 会按单点锚点处理，不会做边缘拉伸；全局 会让 UI 节点四边距为 0，其中图片会额外按比例覆盖父节点。\n如果文件夹本身带锚点前缀，则其中没有前缀的子项会默认继承父级锚点。\n所有导入生成的 Unity UI Image 都会默认开启 Image.preserveAspect。\"保持宽高比（不拉伸）\" 只控制 PSD 到目标 Canvas 的坐标缩放，不等同于 Image.preserveAspect。",
+                    "Tip: Tag matching is case-insensitive. |Button only works when Unity UI is enabled, and |Animation only works in non-UI mode.\nAnchor prefixes must be written at the start of the name, for example: 左上CloseButton or 全局Background.\n上/下/左/右 use point anchors instead of edge stretch; 全局 gives zero margins, and images additionally cover the parent while keeping aspect.\nIf a folder has an anchor prefix, child items without their own prefix inherit the parent's anchor.\nAll generated Unity UI Images enable Image.preserveAspect by default. \"Preserve Aspect Ratio (No Stretch)\" only controls PSD-to-canvas coordinate scaling and is not the same as Image.preserveAspect."),
+                MessageType.Info);
+
+            EditorGUILayout.BeginHorizontal();
+            if (GUILayout.Button(Localize("打开日志目录", "Open Log Folder")))
+            {
+                PsdLogger.RevealLogFolder();
+            }
+
+            if (GUILayout.Button(Localize("定位最新日志", "Reveal Latest Log")))
+            {
+                PsdLogger.RevealLatestLog();
+            }
+
+            EditorGUILayout.EndHorizontal();
+
+            // draw our custom buttons for PSD files
+            if (GUILayout.Button(Localize("导出图层为纹理", "Export Layers As Textures")))
+            {
+                PsdImporter.ExportLayersAsTextures(assetPath);
+            }
+
+            if (GUILayout.Button(Localize("在当前场景中布局", "Layout In Current Scene")))
+            {
+                PsdImporter.LayoutInCurrentScene(assetPath);
+            }
+
+            if (GUILayout.Button(Localize("生成预制体", "Generate Prefab")))
+            {
+                PsdImporter.GeneratePrefab(assetPath);
+            }
         }
 
         /// <summary>
@@ -524,7 +458,7 @@
         /// <summary>
         /// Ensures the header GUI style exists even during editor initialization edge cases.
         /// </summary>
-        private void EnsureHeaderStyle()
+        private static void EnsureHeaderStyle()
         {
             if (guiStyle != null)
             {
@@ -535,124 +469,6 @@
             guiStyle = baseStyle != null ? new GUIStyle(baseStyle) : new GUIStyle();
             guiStyle.richText = true;
             guiStyle.fontSize = 14;
-        }
-
-        /// <summary>
-        /// Draws the opt-in Unity texture importer settings section for PSD assets.
-        /// </summary>
-        private void DrawNativeInspectorFoldout()
-        {
-            bool newShowNativeInspector = EditorGUILayout.Foldout(
-                showNativeInspector,
-                Localize("显示 Unity 原生纹理设置", "Show Unity Texture Settings"),
-                true);
-
-            if (newShowNativeInspector != showNativeInspector)
-            {
-                showNativeInspector = newShowNativeInspector;
-                if (PersistNativeInspectorFoldout)
-                {
-                    EditorPrefs.SetBool(ShowNativeInspectorPrefKey, showNativeInspector);
-                }
-
-                if (!showNativeInspector)
-                {
-                    DisposeNativeEditor();
-                }
-            }
-
-            if (!showNativeInspector)
-            {
-                EditorGUILayout.HelpBox(
-                    Localize(
-                        "已默认收起 Unity 原生 TextureImporter 面板，以避开 Unity 2021.3 在嵌套绘制该面板时可能出现的长时间 Hold on。上方 PSD Layout Tool 2 按钮不依赖此面板。",
-                        "Unity's native TextureImporter panel is collapsed by default to avoid a possible long Hold on in Unity 2021.3 when that internal panel is drawn through a nested editor. The PSD Layout Tool 2 buttons above do not depend on it."),
-                    MessageType.Info);
-                return;
-            }
-
-            EditorGUILayout.HelpBox(
-                Localize(
-                    "如果 Unity 在此区域长时间显示 Hold on，请重新选择该 PSD 后保持此区域收起。",
-                    "If Unity shows a long Hold on in this section, reselect the PSD and keep this section collapsed."),
-                MessageType.Warning);
-
-            DrawNativeTextureInspector();
-        }
-
-        /// <summary>
-        /// Draws Unity's built-in texture importer inspector, falling back to the generic inspector if reflection fails.
-        /// </summary>
-        private void DrawNativeTextureInspector()
-        {
-            if (EnsureNativeEditor())
-            {
-                nativeEditor.OnInspectorGUI();
-                return;
-            }
-
-            DrawDefaultInspector();
-        }
-
-        /// <summary>
-        /// Creates Unity's built-in texture importer inspector on demand.
-        /// </summary>
-        /// <returns>True if the native editor is available; otherwise false.</returns>
-        private bool EnsureNativeEditor()
-        {
-            if (nativeEditor != null)
-            {
-                return true;
-            }
-
-            if (nativeEditorCreationFailed)
-            {
-                return false;
-            }
-
-            Type type = Type.GetType("UnityEditor.TextureImporterInspector, UnityEditor");
-            if (type == null)
-            {
-                nativeEditorCreationFailed = true;
-                return false;
-            }
-
-            try
-            {
-                nativeEditor = CreateEditor(target, type);
-            }
-            catch (Exception exception)
-            {
-                nativeEditorCreationFailed = true;
-                Debug.LogWarning("PSDLayoutTool2 failed to create Unity's TextureImporterInspector: " + exception.Message);
-            }
-
-            return nativeEditor != null;
-        }
-
-        /// <summary>
-        /// Destroys the reflected native editor to avoid keeping stale importer state alive.
-        /// </summary>
-        private void DisposeNativeEditor()
-        {
-            if (nativeEditor == null)
-            {
-                return;
-            }
-
-            UnityEngine.Object.DestroyImmediate(nativeEditor);
-            nativeEditor = null;
-        }
-
-        /// <summary>
-        /// Returns whether the current target is a PSD texture importer.
-        /// </summary>
-        /// <returns>True for PSD importers; otherwise false.</returns>
-        private bool IsPsdTarget()
-        {
-            TextureImporter importer = target as TextureImporter;
-            string assetPath = importer != null ? importer.assetPath : string.Empty;
-            return !string.IsNullOrEmpty(assetPath) && assetPath.EndsWith(".psd", StringComparison.OrdinalIgnoreCase);
         }
 
         /// <summary>
@@ -716,4 +532,3 @@
         }
     }
 }
-

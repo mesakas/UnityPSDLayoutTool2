@@ -11,6 +11,7 @@ This project is explicitly based on the original `UnityPSDLayoutTool` and adds c
 ### Unity 版本支持
 
 - 已验证可用：**Unity 6000.3.7f1**
+- 纹理 Inspector 回归验证：**Unity 2022.3.62f3**（PNG/JPG/PSD 的 Apply、Revert、重新导入和多选）。
 - 原版插件面向较早期 Unity 版本；本项目在其基础上增加了对新版本 Unity 的适配。
 
 ### 相比 UnityPSDLayoutTool 的修改
@@ -37,6 +38,7 @@ This project is explicitly based on the original `UnityPSDLayoutTool` and adds c
 12. 本分支重命名：
    - 插件目录：`Assets/PSDLayoutTool2`
    - 命名空间：`PsdLayoutTool2`
+13. 修复安装插件后普通图片 Inspector 中 Apply / Revert 按钮消失的问题：PSD 控件通过 Unity 官方的 Inspector 标题扩展事件追加，不再全局替换 `TextureImporter` 检查器或嵌套创建原生检查器。
 
 ### 安装
 
@@ -49,6 +51,10 @@ This project is explicitly based on the original `UnityPSDLayoutTool` and adds c
 1. 将 `.psd` 文件放到 Unity 项目的 `Assets` 目录下。
 2. 在 `Project` 面板选中该 PSD 文件。
 3. 在 `Inspector` 中使用 **PSD Layout Tool 2** 的选项和按钮。
+
+单独选中 `.psd` 时，插件控件显示在原生纹理导入设置上方；PNG、JPG 等普通图片及多选资源继续使用 Unity 原生 Inspector，保留 Apply / Revert、Sprite Editor 和预览等功能。旧版的“显示 Unity 原生纹理设置”开关已移除，原生设置直接显示。
+
+升级时覆盖旧版 `Assets/PSDLayoutTool2` 中的同名文件，等待 Unity 编译完成后重新选择图片。确保项目中没有另一份旧版插件仍注册 `TextureImporter` 自定义检查器。回归验证步骤见 [Tests/README.md](Tests/README.md)。
 
 ![PSD Inspector](screenshots/inspector.png)
 
@@ -180,6 +186,7 @@ MIT License，见 [LICENSE.md](LICENSE.md)。
 ## Unity Version Support
 
 - Verified working on: **Unity 6000.3.7f1**
+- Texture Inspector regression checks: **Unity 2022.3.62f3** (Apply, Revert, reimport and multi-selection for PNG/JPG/PSD).
 - The original plugin targets much older Unity versions; this fork adds fixes to run on current Unity.
 
 ## What Was Changed Compared to UnityPSDLayoutTool
@@ -208,6 +215,7 @@ The following changes were added on top of the original `UnityPSDLayoutTool`:
 12. Renamed plugin folder and namespace for this fork:
    - Folder: `Assets/PSDLayoutTool2`
    - Namespace: `PsdLayoutTool2`
+13. Fixed missing Apply / Revert buttons on ordinary textures after installing the plugin. PSD controls now use Unity's public Inspector header extension event instead of globally replacing the `TextureImporter` Inspector or nesting a reflected native editor.
 
 ## Installation
 
@@ -220,6 +228,10 @@ Copy the folder below into your Unity project:
 1. Put a `.psd` file under your Unity project's `Assets` directory.
 2. Select the PSD file in the Project window.
 3. In Inspector, use **PSD Layout Tool 2** options and buttons.
+
+When a single `.psd` is selected, plugin controls appear above the native texture import settings. PNG, JPG and multi-object selections keep Unity's native Inspector, including Apply / Revert, Sprite Editor and previews. The old "Show Unity Texture Settings" toggle has been removed; native settings are displayed directly.
+
+To upgrade, overwrite the matching files in `Assets/PSDLayoutTool2`, let Unity finish compiling, then reselect the image. Make sure no duplicate copy of the old plugin still registers a custom `TextureImporter` Inspector. See [Tests/README.md](Tests/README.md) for regression checks.
 
 ![PSD Inspector](screenshots/inspector.png)
 
