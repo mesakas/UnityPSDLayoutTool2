@@ -120,7 +120,15 @@
             {
                 if (adjustmentLayerInfo.Key == "TySh")
                 {
-                    ReadTextLayer(adjustmentLayerInfo.DataReader);
+                    try { ReadTextLayer(adjustmentLayerInfo.DataReader); }
+                    catch (EndOfStreamException)
+                    {
+                        // Some PSD writers emit a TySh descriptor without the legacy
+                        // EngineData tokens this reader expects. Its channel bitmap is
+                        // still valid; import that artwork instead of aborting the PSD.
+                        IsTextLayer = false;
+                        Text = null;
+                    }
                 }
                 else if (adjustmentLayerInfo.Key == "luni")
                 {
@@ -129,6 +137,11 @@
                     dataReader.ReadBytes(3);
                     dataReader.ReadByte();
                     Name = dataReader.ReadString().TrimEnd(new char[1]);
+                }
+                else if (adjustmentLayerInfo.Key == "lsct" || adjustmentLayerInfo.Key == "lsdk")
+                {
+                    using (var divider = adjustmentLayerInfo.DataReader)
+                        if (divider.BaseStream.Length >= 4) SectionDividerType = divider.ReadInt32();
                 }
             }
 
@@ -181,6 +194,7 @@
         /// Gets a list of the children <see cref="Layer"/>s that belong to this Layer.
         /// </summary>
         public List<Layer> Children { get; private set; }
+        public int SectionDividerType { get; private set; }
 
         /// <summary>
         /// Gets or sets a value indicating whether this layer has Effects/Styles or not.

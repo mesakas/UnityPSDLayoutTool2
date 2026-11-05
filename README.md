@@ -39,6 +39,8 @@ This project is explicitly based on the original `UnityPSDLayoutTool` and adds c
    - 插件目录：`Assets/PSDLayoutTool2`
    - 命名空间：`PsdLayoutTool2`
 13. 修复安装插件后普通图片 Inspector 中 Apply / Revert 按钮消失的问题：PSD 控件通过 Unity 官方的 Inspector 标题扩展事件追加，不再全局替换 `TextureImporter` 检查器或嵌套创建原生检查器。
+14. 修复透明图层缩放时的采样黑边：导出 PNG 为完全透明像素补充邻近颜色，并显式保存透明通道、Clamp、无 Mipmap、无压缩的 Sprite 导入设置；有色半透明像素、原稿阴影和 Alpha 保持不变。没有透明通道的图层按不透明导出，临时纹理在 PNG 写入后释放。
+15. 读取 PSD 的组分隔标记，避免把形状层误判为文件夹；不兼容的旧式文本描述回退为原图层位图。生成 Prefab 不额外创建场景 EventSystem，在场景布局时兼容项目启用的新 Input System。
 
 ### 安装
 
@@ -105,6 +107,9 @@ This project is explicitly based on the original `UnityPSDLayoutTool` and adds c
 - PSD 图层透明度（Opacity）会参与导出纹理与场景对象生成。
 - 图层蒙版 Alpha 会与图层 Alpha 正确相乘，不再出现透明度异常。
 - 文本层（UI Text / TextMesh）也会应用图层透明度。
+- 导出时只对最终 Alpha 为 0 的像素扩展邻近可见 RGB，避免双线性采样混入透明黑色；所有 Alpha、有色半透明像素与原稿黑色投影都不会被提亮或改色。算法使用两遍线性扫描，不会为每一圈透明区域重复扫描整张图。
+- 生成的 Sprite 固定使用输入 Alpha、Alpha Is Transparency、Clamp、关闭 Mipmap 与无压缩，重新导入时会更新旧 `.meta` 的这些设置并保留 GUID。无压缩会增加纹理占用，以保留细小 UI 边缘的颜色与透明度；显式的平台覆盖设置仍由项目控制。
+- 升级后重新执行“生成预制体”或“在当前场景中布局”，在覆盖选择中更新 PNG，才能重新生成修复后的像素数据。只对旧 PNG 点 Reimport 不会重跑 PSD 解码。
 
 #### 隐藏层与重名处理
 
@@ -216,6 +221,8 @@ The following changes were added on top of the original `UnityPSDLayoutTool`:
    - Folder: `Assets/PSDLayoutTool2`
    - Namespace: `PsdLayoutTool2`
 13. Fixed missing Apply / Revert buttons on ordinary textures after installing the plugin. PSD controls now use Unity's public Inspector header extension event instead of globally replacing the `TextureImporter` Inspector or nesting a reflected native editor.
+14. Fixed filtering fringes around transparent layers. Exported PNGs extend neighboring colors into fully transparent pixels, and Sprite imports explicitly save input alpha, transparency processing, Clamp, no mipmaps and uncompressed settings. Semi-transparent artwork, shadows and alpha remain unchanged. Layers without an alpha channel are opaque; temporary export textures are released after writing each PNG.
+15. Read PSD section-divider records so shape layers are not mistaken for folders; unsupported legacy text descriptors fall back to their layer bitmap. Prefab generation no longer creates an unrelated scene EventSystem, and scene layout supports the enabled Input System.
 
 ## Installation
 
@@ -282,6 +289,9 @@ Actions:
 - PSD layer opacity is applied during texture export and object generation.
 - Mask alpha is correctly multiplied with layer alpha.
 - Text layers (UI Text / TextMesh) also apply layer opacity.
+- Export only extends neighboring visible RGB into pixels whose final alpha is zero, preventing bilinear filtering from introducing transparent black. All alpha values, semi-transparent colors and original black shadows are preserved. Two linear raster passes avoid rescanning the entire image for every transparent ring.
+- Generated Sprites use input alpha, Alpha Is Transparency, Clamp, disabled mipmaps and no compression. Reimport updates those settings on existing metadata while preserving GUIDs. Uncompressed textures use more memory to retain small UI edges; explicit platform overrides remain under project control.
+- After upgrading, run Generate Prefab or Layout In Current Scene again and select the generated PNGs for overwrite. Reimporting an old PNG alone does not rerun PSD decoding or regenerate its pixel data.
 
 ### Hidden Layers And Duplicate Names
 

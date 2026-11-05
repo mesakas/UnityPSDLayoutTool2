@@ -597,7 +597,8 @@
                     if (UseUnityUI)
                     {
                         PsdLogger.Step("Create or resolve Unity UI root");
-                        CreateUIEventSystem();
+                        // Prefab generation must not add an unrelated scene object.
+                        if (LayoutInScene) CreateUIEventSystem();
                         Canvas targetCanvas = ResolveTargetCanvas();
                         if (targetCanvas != null)
                         {
@@ -2739,7 +2740,11 @@
         /// <returns>True if the layer starts a group, otherwise false.</returns>
         private static bool IsStartGroup(Layer layer)
         {
-            return layer.IsPixelDataIrrelevant;
+            // The irrelevant-pixels bit also occurs on Photoshop shape layers.
+            // Only section dividers represent folders; retain the zero-size
+            // fallback for older writers without an lsct/lsdk block.
+            return layer.SectionDividerType == 1 || layer.SectionDividerType == 2 ||
+                (layer.SectionDividerType == 0 && layer.IsPixelDataIrrelevant && layer.Rect.width == 0 && layer.Rect.height == 0);
         }
 
         /// <summary>
@@ -2749,7 +2754,7 @@
         /// <returns>True if the layer ends a group, otherwise false.</returns>
         private static bool IsEndGroup(Layer layer)
         {
-            return layer.Name.Contains("</Layer set>") ||
+            return layer.SectionDividerType == 3 || layer.Name.Contains("</Layer set>") ||
                 layer.Name.Contains("</Layer group>") ||
                 (layer.Name == " copy" && layer.Rect.height == 0);
         }
@@ -3137,9 +3142,17 @@
                 // decode the layer into a texture
                 PsdLogger.Step("Decode layer image: " + DescribeLayerForLog(layer));
                 Texture2D texture = ImageDecoder.DecodeImage(layer);
-
-                PsdLogger.Step("Write PNG: " + file);
-                File.WriteAllBytes(file, texture.EncodeToPNG());
+                try
+                {
+                    PsdLogger.Step("Write PNG: " + file);
+                    File.WriteAllBytes(file, texture.EncodeToPNG());
+                }
+                finally
+                {
+                    // Each layer owns this temporary CPU/GPU texture only until
+                    // its PNG is encoded. Large PSD imports must not retain them.
+                    UnityEngine.Object.DestroyImmediate(texture);
+                }
             }
             else
             {
@@ -3213,19 +3226,23 @@
             {
                 PsdLogger.Info("Apply TextureImporter sprite settings: " + relativePathToSprite);
                 textureImporter.textureType = TextureImporterType.Sprite;
+                textureImporter.alphaSource = TextureImporterAlphaSource.FromInput;
+                textureImporter.alphaIsTransparency = true;
+                textureImporter.wrapMode = TextureWrapMode.Clamp;
+                textureImporter.textureCompression = TextureImporterCompression.Uncompressed;
                 textureImporter.mipmapEnabled = false;
                 textureImporter.spriteImportMode = SpriteImportMode.Single;
                 textureImporter.spritePivot = new Vector2(0.5f, 0.5f);
                 textureImporter.maxTextureSize = 2048;
                 textureImporter.spritePixelsPerUnit = PixelsToUnits;
+                // Persist these settings on existing generated assets as well.
+                // Reimport keeps their .meta GUIDs and prefab sprite references.
+                textureImporter.SaveAndReimport();
             }
             else
             {
                 PsdLogger.Warning("TextureImporter was not found for generated sprite: " + relativePathToSprite);
             }
-
-            PsdLogger.Step("Reimport sprite asset after applying settings: " + relativePathToSprite);
-            AssetDatabase.ImportAsset(relativePathToSprite, ImportAssetOptions.ForceUpdate);
 
             Sprite sprite = (Sprite)AssetDatabase.LoadAssetAtPath(relativePathToSprite, typeof(Sprite));
             if (sprite == null)
@@ -3531,7 +3548,11 @@
             {
                 GameObject gameObject = new GameObject("EventSystem");
                 gameObject.AddComponent<EventSystem>();
+#if ENABLE_INPUT_SYSTEM
+                gameObject.AddComponent<UnityEngine.InputSystem.UI.InputSystemUIInputModule>();
+#else
                 gameObject.AddComponent<StandaloneInputModule>();
+#endif
             }
         }
 

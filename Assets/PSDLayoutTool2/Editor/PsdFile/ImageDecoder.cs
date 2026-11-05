@@ -52,8 +52,79 @@
                 }
             }
 
+            // PNG stores straight alpha. Bleed only the invisible RGB so linear
+            // filtering cannot mix visible edge colors with transparent black.
+            BleedTransparentPixels(colors, (int)layer.Rect.width, (int)layer.Rect.height);
             texture.SetPixels32(colors);
             return texture;
+        }
+
+        /// <summary>
+        /// Extends the nearest visible RGB into fully transparent texels without
+        /// changing coverage, semi-transparent artwork, or Photoshop shadows.
+        /// </summary>
+        internal static void BleedTransparentPixels(Color32[] colors, int width, int height)
+        {
+            if (colors == null) throw new ArgumentNullException(nameof(colors));
+            if (width <= 0 || height <= 0 || (long)width * height != colors.Length)
+                throw new ArgumentException("Pixel dimensions do not match the color buffer.");
+
+            bool hasVisible = false, hasTransparent = false;
+            for (int i = 0; i < colors.Length; i++)
+            {
+                if (colors[i].a == 0) hasTransparent = true;
+                else hasVisible = true;
+                if (hasVisible && hasTransparent) break;
+            }
+            // No seed exists for an empty layer; an opaque layer needs no padding.
+            if (!hasVisible || !hasTransparent) return;
+
+            // Two raster passes compute nearest sources in Manhattan distance.
+            // O(width * height), with one int per pixel rather than a queue plus
+            // distance/visited buffers or a whole-image scan for each new ring.
+            var nearest = new int[colors.Length];
+            for (int y = 0, index = 0; y < height; y++)
+            {
+                for (int x = 0; x < width; x++, index++)
+                {
+                    if (colors[index].a != 0) { nearest[index] = index; continue; }
+                    int source = -1, distance = int.MaxValue;
+                    if (x > 0) SelectCloserSource(nearest[index - 1], x, y, width, ref source, ref distance);
+                    if (y > 0) SelectCloserSource(nearest[index - width], x, y, width, ref source, ref distance);
+                    nearest[index] = source;
+                }
+            }
+            for (int y = height - 1, index = colors.Length - 1; y >= 0; y--)
+            {
+                for (int x = width - 1; x >= 0; x--, index--)
+                {
+                    if (colors[index].a != 0) continue;
+                    int source = -1, distance = int.MaxValue;
+                    SelectCloserSource(nearest[index], x, y, width, ref source, ref distance);
+                    if (x + 1 < width) SelectCloserSource(nearest[index + 1], x, y, width, ref source, ref distance);
+                    if (y + 1 < height) SelectCloserSource(nearest[index + width], x, y, width, ref source, ref distance);
+                    nearest[index] = source;
+                    // Every selected source is an original nonzero-alpha pixel.
+                    // Transparent writes therefore cannot become new color seeds.
+                    if (source >= 0)
+                    {
+                        var color = colors[source];
+                        color.a = 0;
+                        colors[index] = color;
+                    }
+                }
+            }
+        }
+
+        private static void SelectCloserSource(int candidate, int x, int y, int width, ref int source, ref int distance)
+        {
+            if (candidate < 0) return;
+            int candidateDistance = Math.Abs(x - candidate % width) + Math.Abs(y - candidate / width);
+            if (candidateDistance < distance || (candidateDistance == distance && candidate < source))
+            {
+                source = candidate;
+                distance = candidateDistance;
+            }
         }
 
         /// <summary>
@@ -64,19 +135,19 @@
         /// <returns>The sampled color.</returns>
         private static Color32 GetColor(Layer layer, int position)
         {
-            Color32 baseColor = new Color32(1, 1, 1, 1);
+            Color32 baseColor = new Color32(1, 1, 1, byte.MaxValue);
             switch (layer.PsdFile.ColorMode)
             {
                 case ColorModes.Grayscale:
                 case ColorModes.Duotone:
-                    baseColor = new Color32(layer.SortedChannels[0].ImageData[position], layer.SortedChannels[0].ImageData[position], layer.SortedChannels[0].ImageData[position], 1);
+                    baseColor = new Color32(layer.SortedChannels[0].ImageData[position], layer.SortedChannels[0].ImageData[position], layer.SortedChannels[0].ImageData[position], byte.MaxValue);
                     break;
                 case ColorModes.Indexed:
                     int index = layer.SortedChannels[0].ImageData[position];
-                    baseColor = new Color32(layer.PsdFile.ColorModeData[index], layer.PsdFile.ColorModeData[index + 256], layer.PsdFile.ColorModeData[index + 512], 1);
+                    baseColor = new Color32(layer.PsdFile.ColorModeData[index], layer.PsdFile.ColorModeData[index + 256], layer.PsdFile.ColorModeData[index + 512], byte.MaxValue);
                     break;
                 case ColorModes.RGB:
-                    baseColor = new Color32(layer.SortedChannels[0].ImageData[position], layer.SortedChannels[1].ImageData[position], layer.SortedChannels[2].ImageData[position], 1);
+                    baseColor = new Color32(layer.SortedChannels[0].ImageData[position], layer.SortedChannels[1].ImageData[position], layer.SortedChannels[2].ImageData[position], byte.MaxValue);
                     break;
                 case ColorModes.CMYK:
                     baseColor = CMYKToRGB(layer.SortedChannels[0].ImageData[position], layer.SortedChannels[1].ImageData[position], layer.SortedChannels[2].ImageData[position], layer.SortedChannels[3].ImageData[position]);
@@ -195,7 +266,7 @@
                 blue = byte.MaxValue;
             }
 
-            return new Color32(red, green, blue, 1);
+            return new Color32(red, green, blue, byte.MaxValue);
         }
 
         /// <summary>
@@ -233,7 +304,7 @@
                 blue = byte.MaxValue;
             }
 
-            return new Color32(red, green, blue, 1);
+            return new Color32(red, green, blue, byte.MaxValue);
         }
     }
 }
